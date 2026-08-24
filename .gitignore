@@ -1,0 +1,13 @@
+# 构建产物
+build/
+
+# ESP-IDF 自动生成的配置（本机相关）
+sdkconfig
+sdkconfig.old
+
+# 组件管理器自动下载的依赖
+managed_components/
+
+# IDE 配置（含本机绝对路径）
+.vscode/
+.clangd
