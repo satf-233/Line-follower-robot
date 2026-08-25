@@ -109,6 +109,14 @@ void motor_turn_right(float duty)
     motorB_CCW(duty);
 }
 
+void motor_turn(float speed_coe)
+{
+    if(speed_coe > 0)
+        motor_turn_right(speed_coe);
+    else
+        motor_turn_left(-speed_coe);
+}
+
 void motor_stop_drive(void)
 {
     motorA_stop();

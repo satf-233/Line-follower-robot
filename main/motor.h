@@ -23,6 +23,8 @@ void motor_backward(float duty);
 // 左转 / 右转（duty：占空比 0.0 ~ 1.0，用于控制速度，0为停止，1为全速）
 void motor_turn_left(float duty);
 void motor_turn_right(float duty);
+//双向转向，speed_coe参数区间在-1~1，负数为左，正数为右
+void motor_turn(float speed_coe);
 /*
     不建议通过类似motor_forward(0)的方式来使驱动轮停止运转
     使用stop类函数可以让代码可读性更佳，并且易于查找
