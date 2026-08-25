@@ -12,8 +12,11 @@
 // ================================================================
 
 void start(void)
-{
-    motor_forward(0.5);
+{    
+    motor_init();
+    ir_init();   // 先初始化，follow() 才能读到电平
+
+    motor_forward(0.2);
     int turns = 0;
     while (turns++ < 10)
     {
