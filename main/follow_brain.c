@@ -43,6 +43,6 @@ void follow(int tik, float forward_speed)
         motor_stop();
         motor_forward(forward_speed);
     }
-    pdMS_TO_TICKS(500)
+    vTaskDelay(pdMS_TO_TICKS(500));
 }
 

@@ -2,7 +2,8 @@
 #include "driver/gpio.h"
 #include "start.h"
 
-void main()
+int app_main(void)
 {
     start();
+    return 0;
 }
