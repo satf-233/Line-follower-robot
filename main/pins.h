@@ -26,4 +26,12 @@
 #define DIN1  GPIO_NUM_42
 #define DIN2  GPIO_NUM_41
 
+// ===== 1.8寸 TFT 液晶屏（ST7735S，SPI 串口 7Pin）=====
+// 引脚：RST / D/C / SDI(MOSI) / SCK / CS
+#define LCD_RST GPIO_NUM_21
+#define LCD_DC  GPIO_NUM_15
+#define LCD_SDI GPIO_NUM_16
+#define LCD_SCK GPIO_NUM_13
+#define LCD_CS  GPIO_NUM_14
+
 #endif // PINS_H
