@@ -5,10 +5,10 @@
 
 // ===== 四路红外传感器IR =====
 //看向前进方向，从左往右编号
-#define IR1 GPIO_NUM_x
-#define IR2 GPIO_NUM_x
-#define IR3 GPIO_NUM_x
-#define IR4 GPIO_NUM_x
+#define IR1 GPIO_NUM_9
+#define IR2 GPIO_NUM_10
+#define IR3 GPIO_NUM_11
+#define IR4 GPIO_NUM_12
 
 // ===== LED（WS2812）=====
 #define LED_GPIO        GPIO_NUM_38

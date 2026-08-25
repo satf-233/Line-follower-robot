@@ -1,8 +1,6 @@
 #include "start.h"
 #include "motor.h"
 #include "follow_brain.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "pins.h"
 #include "driver/gpio.h"
 
@@ -12,13 +10,15 @@
 // ================================================================
 
 void start(void)
-{
-    motor_forward(0.5);
+{    
+    motor_init();
+    ir_init();   // 先初始化，follow() 才能读到电平
+
+    motor_forward(0.2);
     int turns = 0;
     while (turns++ < 10)
     {
-        follow();
-        vTaskDelay(pdMS_TO_TICKS(500));
+        follow(500, 0.2);
     }
     motor_stop();
 }
