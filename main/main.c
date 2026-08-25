@@ -38,14 +38,40 @@ void app_main(void)
     motor_init();
 
     // 需要执行的程序
-    // while (1) {
-        // led测试用
-        // ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0, 255, 0)); // 绿色
-        // ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-        // vTaskDelay(pdMS_TO_TICKS(500));// 单位ms
+    for (int i = 0; i < 2; i++)
+    {
+        ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0, 255, 0)); // 绿色
+        ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+        vTaskDelay(pdMS_TO_TICKS(500));// 单位ms
 
-        // ESP_ERROR_CHECK(led_strip_clear(led_strip));
-        // ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-        // vTaskDelay(pdMS_TO_TICKS(500));
-    // }
+        ESP_ERROR_CHECK(led_strip_clear(led_strip));
+        ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_forward(0.2);
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_stop_drive();
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // motor_backward(0.2);
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_stop_drive();
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // motor_turn_left(0.2);
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_stop_turn();
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_turn_right(0.2);
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_stop_turn();
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // motor_forward(0.2);
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_turn_left(0.2);
+    // vTaskDelay(pdMS_TO_TICKS(1000));
+    // motor_stop();
 }
