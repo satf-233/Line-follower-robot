@@ -18,9 +18,8 @@ void motor_init(void)
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << STBY)
                       | (1ULL << PWMA) | (1ULL << AIN1) | (1ULL << AIN2)
-                      | (1ULL << PWMB) | (1ULL << BIN1) | (1ULL << BIN2),
-        // TODO: 电机 D 引脚待定（暂时留空），填好 pins.h 后在此追加：
-        //       | (1ULL << PWMD) | (1ULL << DIN1) | (1ULL << DIN2)
+                      | (1ULL << PWMB) | (1ULL << BIN1) | (1ULL << BIN2)
+                      | (1ULL << PWMD) | (1ULL << DIN1) | (1ULL << DIN2),
         .mode = GPIO_MODE_OUTPUT,
     };
     gpio_config(&io);
@@ -46,27 +45,27 @@ void motorA_CW(float duty)
 
 void motorB_CCW(float duty)
 {
-    gpio_set_level(BIN1, 1);
-    gpio_set_level(BIN2, 0);
+    gpio_set_level(BIN1, 0);
+    gpio_set_level(BIN2, 1);
     pwm_set_duty(PWMB, duty);
 }
 void motorB_CW(float duty)
 {
-    gpio_set_level(BIN1, 0);
-    gpio_set_level(BIN2, 1);
+    gpio_set_level(BIN1, 1);
+    gpio_set_level(BIN2, 0);
     pwm_set_duty(PWMB, duty);
 }
 
 void motorD_CCW(float duty)
 {
-    gpio_set_level(DIN1, 1);
-    gpio_set_level(DIN2, 0);
+    gpio_set_level(DIN1, 0);
+    gpio_set_level(DIN2, 1);
     pwm_set_duty(PWMD, duty);
 }
 void motorD_CW(float duty)
 {
-    gpio_set_level(DIN1, 0);
-    gpio_set_level(DIN2, 1);
+    gpio_set_level(DIN1, 1);
+    gpio_set_level(DIN2, 0);
     pwm_set_duty(PWMD, duty);
 }
 
