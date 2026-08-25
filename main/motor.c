@@ -99,13 +99,13 @@ void motor_backward(float duty)
     motorA_CCW(duty);
 }
 
-void motor_turn_plus_CW(float duty)
+void motor_turn_plus_CW(float duty)//顺时针
 {
     motorA_CCW(duty);
     motorB_CCW(duty);
     motorD_CCW(duty);
 }
-void motor_turn_plus_CCW(float duty)
+void motor_turn_plus_CCW(float duty)//逆时针
 {
     motorA_CW(duty);
     motorB_CW(duty);

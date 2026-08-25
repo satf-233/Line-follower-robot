@@ -28,26 +28,94 @@ void ir_init(void)
 }
 
 
+// void keep(int state, float speed)
+// {
+//     switch (state)
+//         {
+//         case -1:
+//             motor_turn_left(speed);
+//             break;
+//         case 1:
+//             motor_turn_right(speed);
+//             break;
+//         case 0:
+//             motor_forward(speed);
+//             break;
+//         default:
+//             break;
+//         }
+// }
 
-void follow(int tik, float forward_speed)
+void follow()
 {
-    static int turn_flag = 0; //转向信号，决定这次follow是转向还是修正
+    //需要调参
+    float for_speed = 0.15;         //前进速度
+    float turn_speed = 0.15;        //转向速度，修正和转弯共用
+    int keep_time = 500;            //一轮时间
+    int turn_delay_time = 500;      //转弯延迟时间
+
+    static int turn_state = 0; //转向状态，决定这次follow是转向还是直行
     int IR[4];
-    IR[0] = 
-    int IR_1 = gpio_get_level(IR1); 
-    int IR_2 = gpio_get_level(IR2);
-    int IR_3 = gpio_get_level(IR3);
-    int IR_4 = gpio_get_level(IR4);
-    int line_color = 1; //白底黑线，否则赋-1
-    int line_forward = (IR_1+IR_2-IR_3-IR_4) * line_color;
-    float speed_coe = line_forward * COEFFICIENT;
-    if(speed_coe != 0){
-        motor_stop();
-        motor_turn(speed_coe);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        motor_stop();
-        motor_forward(forward_speed);
+    IR[0] = gpio_get_level(IR1);
+    IR[1] = gpio_get_level(IR2);
+    IR[2] = gpio_get_level(IR3);
+    IR[3] = gpio_get_level(IR4);
+    int count = IR[0] + IR[1] + IR[2] + IR[3];
+    if (count == 4 || count == 0)
+    {
+        //keep(turn_state, speed);
     }
-    vTaskDelay(pdMS_TO_TICKS(500));
+    else if(count == 3)
+    {
+        if(IR[0] == 0)//黑白白白，左修正
+        {
+            motor_turn_left(turn_speed);
+        }
+        else if(IR[3] == 0)//白白白黑，右修正
+        {
+            motor_turn_right(turn_speed);
+        }
+        else//其余无效情况
+        {
+            //keep(turn_state, speed);
+        }
+    }
+    else if(count == 2)
+    {
+        int cnd = IR[0] + IR[1]*2 + IR[2]*4 + IR[3]*8; 
+        switch (cnd)
+        {
+        case 3://白白黑黑。右修正
+            motor_turn_right(turn_speed);
+            break;
+        case 6://白黑黑白，直行
+            motor_forward(for_speed);
+            break;
+        case 12://黑黑白白，左修正
+            motor_turn_left(turn_speed);
+            break;
+        default:
+            //keep(turn_state, speed);
+            break;
+        }
+    }
+    else//转弯情形
+    {
+        if(IR[0] == 1)//白黑黑黑，右转
+        {
+            vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
+            motor_turn_plus_CW(turn_speed);
+        }
+        else if(IR[3] == 1)//黑黑黑白，左转
+        {
+            vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
+            motor_turn_plus_CCW(turn_speed);
+        }
+        else
+        {
+            //keep(turn_state, speed);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(keep_time));
 }
 

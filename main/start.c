@@ -14,12 +14,12 @@ void start(void)
     motor_init();
     ir_init();   // 先初始化，follow() 才能读到电平
 
-    double speed = 0.1;
+    double speed = 0.15;
     motor_forward(speed);
     int turns = 0;
     while (turns++ < 100)
     {
-        follow(500, speed);
+        follow();
     }
     motor_stop();
 }
