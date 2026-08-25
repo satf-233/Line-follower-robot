@@ -1,8 +1,6 @@
 #include "start.h"
 #include "motor.h"
 #include "follow_brain.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "pins.h"
 #include "driver/gpio.h"
 
@@ -20,8 +18,7 @@ void start(void)
     int turns = 0;
     while (turns++ < 10)
     {
-        follow();
-        vTaskDelay(pdMS_TO_TICKS(500));
+        follow(500, 0.2);
     }
     motor_stop();
 }
