@@ -99,21 +99,17 @@ void motor_backward(float duty)
     motorA_CCW(duty);
 }
 
-void motor_turn_left(float duty)
+void motor_turn_plus_CW(float duty)
 {
-    motorB_CW(duty);
-}
-void motor_turn_right(float duty)
-{
+    motorA_CCW(duty);
     motorB_CCW(duty);
+    motorD_CCW(duty);
 }
-
-void motor_turn(float speed_coe)
+void motor_turn_plus_CCW(float duty)
 {
-    if(speed_coe > 0)
-        motor_turn_right(speed_coe);
-    else
-        motor_turn_left(-speed_coe);
+    motorA_CW(duty);
+    motorB_CW(duty);
+    motorD_CW(duty);
 }
 
 void motor_stop_drive(void)
@@ -121,10 +117,7 @@ void motor_stop_drive(void)
     motorA_stop();
     motorD_stop();
 }
-void motor_stop_turn(void)
-{
-    motorB_stop();
-}
+
 void motor_stop(void)
 {
     motorA_stop();
