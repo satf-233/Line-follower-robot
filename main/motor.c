@@ -91,13 +91,13 @@ void motorD_stop(void)
 
 void motor_forward(float duty)
 {
-    // TODO: 前进
-    (void)duty;
+    motorD_CCW(duty);
+    motorA_CW(duty);
 }
 void motor_backward(float duty)
 {
-    // TODO: 后退
-    (void)duty;
+    motorD_CW(duty);
+    motorA_CCW(duty);
 }
 
 void motor_turn_left(float duty)
