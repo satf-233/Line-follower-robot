@@ -27,8 +27,13 @@ void ir_init(void)
     gpio_config(&io);
 }
 
+
+
 void follow(int tik, float forward_speed)
 {
+    static int turn_flag = 0; //转向信号，决定这次follow是转向还是修正
+    int IR[4];
+    IR[0] = 
     int IR_1 = gpio_get_level(IR1); 
     int IR_2 = gpio_get_level(IR2);
     int IR_3 = gpio_get_level(IR3);
