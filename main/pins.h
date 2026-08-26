@@ -14,6 +14,9 @@
 #define LED_GPIO        GPIO_NUM_38
 #define LED_NUM         1
 
+// ===== 按键 =====
+#define BOOT_GPIO       GPIO_NUM_0   // BOOT 按键（按下接 GND，低电平）
+
 // ===== 电机驱动（TB6612）=====
 #define STBY  GPIO_NUM_4
 #define PWMA  GPIO_NUM_5

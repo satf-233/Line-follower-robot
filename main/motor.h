@@ -21,8 +21,8 @@ void motorD_stop(void);
 void motor_forward(float duty);
 void motor_backward(float duty);
 // 左转 / 右转（duty：占空比 0.0 ~ 1.0，用于控制速度，0为停止，1为全速）
-void motor_turn_left(float duty);
-void motor_turn_right(float duty);
+void motor_turn_left(float duty, float kp);
+void motor_turn_right(float duty, float kp);
 // 双向转向，speed_coe参数区间在-1~1，负数为左，正数为右
 void motor_turn(float speed_coe);
 

@@ -49,10 +49,12 @@ void ir_init(void)
 void follow()
 {
     //需要调参
-    float for_speed = 0.1;         //前进速度
-    float turn_speed = 0.1;        //转向速度，修正和转弯共用
-    int keep_time = 200;            //一轮时间
-    int turn_delay_time = 200;      //转弯延迟时间
+    float for_speed = 0.16;         //前进速度
+    float turn_kp1 = 0.02;        //转向速度，修正和转弯共用
+    float turn_kp2 = 0.06;  
+    float turn_speed_2 = 0.1;
+    int keep_time = 5;            //一轮时间
+    int turn_delay_time = 75;      //转弯延迟时间
 
     int turn_state = 0; //转向状态，决定这次follow是转向还是直行
     int IR[4];
@@ -69,11 +71,19 @@ void follow()
     {
         if(IR[0] == 0)//黑白白白，左修正
         {
-            motor_turn_left(turn_speed);
+            motor_turn_left(for_speed, turn_kp2);
         }
         else if(IR[3] == 0)//白白白黑，右修正
         {
-            motor_turn_right(turn_speed);
+            motor_turn_right(for_speed, turn_kp2);
+        }
+        else if (IR[2] == 0)//白白黑白
+        {
+            motor_turn_right(for_speed, turn_kp1);
+        }
+        else if (IR[1] == 0)//白黑白白
+        {
+            motor_turn_left(for_speed, turn_kp1);
         }
         else
         {
@@ -86,13 +96,13 @@ void follow()
         switch (cnd)
         {
         case 3://白白黑黑。右修正
-            motor_turn_right(turn_speed);
+            motor_turn_right(for_speed, turn_kp1);
             break;
         case 6://白黑黑白，直行
             motor_forward(for_speed);
             break;
         case 12://黑黑白白，左修正
-            motor_turn_left(turn_speed);
+            motor_turn_left(for_speed, turn_kp1);
             break;
         default:
             //keep(turn_state, speed);
@@ -101,15 +111,15 @@ void follow()
     }
     else//转弯情形
     {
-        if(IR[0] == 1)//白黑黑黑，右转
+        if(IR[0] == 1 || IR[1] == 1)//白黑黑黑,黑白黑黑，右转
         {
             vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
-            motor_turn_plus_CW(turn_speed);
+            motor_turn_plus_CW(turn_speed_2);
         }
-        else if(IR[3] == 1)//黑黑黑白，左转
+        else if(IR[2] == 1 || IR[3] == 1)//黑黑白黑，黑黑黑白，左转
         {
             vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
-            motor_turn_plus_CCW(turn_speed);
+            motor_turn_plus_CCW(turn_speed_2);
         }
         else
         {
