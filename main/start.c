@@ -18,7 +18,7 @@ void start(void)
     double speed = 0.15;
     motor_forward(speed);
     int turns = 0;
-    while (turns++ < 100)
+    while (turns++ < 10000)
     {
         follow();
         //把四路电平IR1~IR4从左往右依次显示

@@ -51,10 +51,10 @@ void follow()
     //需要调参
     float for_speed = 0.15;         //前进速度
     float turn_speed = 0.15;        //转向速度，修正和转弯共用
-    int keep_time = 500;            //一轮时间
+    int keep_time = 200;            //一轮时间
     int turn_delay_time = 500;      //转弯延迟时间
 
-    static int turn_state = 0; //转向状态，决定这次follow是转向还是直行
+    int turn_state = 0; //转向状态，决定这次follow是转向还是直行
     int IR[4];
     IR[0] = gpio_get_level(IR1);
     IR[1] = gpio_get_level(IR2);
