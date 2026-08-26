@@ -29,6 +29,11 @@ void motor_turn(float speed_coe);
 // 原地旋转
 void motor_turn_plus_CW(float duty);
 void motor_turn_plus_CCW(float duty);
+
+// test
+void motor_braking_turn(float duty_A, float duty_D);
+
+
 /*
     不建议通过类似motor_forward(0)的方式来使驱动轮停止运转
     使用stop类函数可以让代码可读性更佳，并且易于查找

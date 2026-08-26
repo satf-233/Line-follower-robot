@@ -9,4 +9,7 @@ void ir_init(void);
 //循迹函数，自动调取红外传感器四路数据，判断路况，并发出转向指令
 void follow();
 
+// test
+void follow_test(int * stop);
+
 #endif // FOLLOW_BRAIN_H

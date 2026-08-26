@@ -123,6 +123,13 @@ void motor_turn_plus_CCW(float duty)//逆时针
     motorD_CW(duty);
 }
 
+// test
+void motor_braking_turn(float duty_A, float duty_D)
+{
+    motorA_CW(duty_A);
+    motorD_CCW(duty_D);
+}
+
 void motor_stop_drive(void)
 {
     motorA_stop();

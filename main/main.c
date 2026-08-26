@@ -4,6 +4,8 @@
 
 #include "pins.h"
 #include "motor.h"
+#include "follow_brain.h"
+#include "lcd.h"
 
 void app_main(void)
 {
@@ -36,42 +38,29 @@ void app_main(void)
     // 参数1用来传入灯带配置，参数2用来传入rmt配置，参数3用来存放创建好的灯带设备
 
     motor_init();
+    ir_init();   // 先初始化，follow() 才能读到电平
+    lcd_init();  // 液晶屏幕初始化  
 
     // 需要执行的程序
-    for (int i = 0; i < 2; i++)
+    // for (int i = 0; i < 2; i++)
+    // {
+    //     ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0, 255, 0)); // 绿色
+    //     ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+    //     vTaskDelay(pdMS_TO_TICKS(500));// 单位ms
+
+    //     ESP_ERROR_CHECK(led_strip_clear(led_strip));
+    //     ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+    //     vTaskDelay(pdMS_TO_TICKS(500));
+    // }
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    motor_forward(0.15);
+
+    int stop = 0;
+
+    while (stop < 1000)
     {
-        ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0, 255, 0)); // 绿色
-        ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-        vTaskDelay(pdMS_TO_TICKS(500));// 单位ms
-
-        ESP_ERROR_CHECK(led_strip_clear(led_strip));
-        ESP_ERROR_CHECK(led_strip_refresh(led_strip));
-        vTaskDelay(pdMS_TO_TICKS(500));
+        follow_test(&stop);
     }
-
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_forward(0.2);
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_stop_drive();
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // motor_backward(0.2);
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_stop_drive();
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // motor_turn_left(0.2);
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_stop_turn();
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_turn_right(0.2);
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_stop_turn();
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-
-    // motor_forward(0.2);
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_turn_left(0.2);
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // motor_stop();
 }
