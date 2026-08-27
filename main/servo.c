@@ -15,11 +15,16 @@
 #define SERVO_TIMER         LEDC_TIMER_1       // 用 TIMER_1，避开电机 PWM 的 TIMER_0
 #define SERVO_SPEED_MODE    LEDC_LOW_SPEED_MODE
 
-// 脉宽范围（us）与角度范围，MG90S 常见参数，可按实际舵机微调
+// 脉宽范围（us），MG90S 常见参数，可按实际舵机微调
 #define SERVO_PULSE_MIN_US  500    // 0°   对应脉宽
 #define SERVO_PULSE_MAX_US  2500   // 180° 对应脉宽
+
+// 角度范围。最小角度都是 0°，但两个舵机的最大角度不同：
+// 舵机2（SERVO2）因安装空间受限，实际最多只能转到 100°
 #define SERVO_ANGLE_MIN     0
-#define SERVO_ANGLE_MAX     180
+#define SERVO_FULL_ANGLE    180   // 满行程角度，用于脉宽换算（不是限幅上限）
+#define SERVO1_ANGLE_MAX    180   // 舵机1 最大角度
+#define SERVO2_ANGLE_MAX    100   // 舵机2 最大角度（受空间限制）
 
 // 两个舵机使用的 LEDC 通道（utils.c 的电机 PWM 会从 0 开始占用通道，这里用高位通道避开）
 #define SERVO1_CHANNEL      LEDC_CHANNEL_6
@@ -80,7 +85,7 @@ void servo_init(void)
     servo_set_angle(SERVO1_GPIO, 90);
     servo_set_angle(SERVO2_GPIO, 90);
 
-    ESP_LOGI(TAG, "舵机初始化完成 (GPIO%d / GPIO%d)", SERVO1_GPIO, SERVO2_GPIO);
+    // ESP_LOGI(TAG, "舵机初始化完成 (GPIO%d / GPIO%d)", SERVO1_GPIO, SERVO2_GPIO);
 }
 
 void servo_set_angle(gpio_num_t gpio_num, int angle)
@@ -91,17 +96,20 @@ void servo_set_angle(gpio_num_t gpio_num, int angle)
         return;
     }
 
-    // 角度限幅到 [0°, 180°]
+    // 每个舵机的最大角度不同：舵机2 因空间限制最大只能到 100°
+    int angle_max = (gpio_num == SERVO2_GPIO) ? SERVO2_ANGLE_MAX : SERVO1_ANGLE_MAX;
+
+    // 角度限幅到 [0°, 最大角度]
     if (angle < SERVO_ANGLE_MIN) {
         angle = SERVO_ANGLE_MIN;
-    } else if (angle > SERVO_ANGLE_MAX) {
-        angle = SERVO_ANGLE_MAX;
+    } else if (angle > angle_max) {
+        angle = angle_max;
     }
 
     // 按角度换算脉宽（us）
     uint32_t pulse_us = SERVO_PULSE_MIN_US +
         (uint32_t)((SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US) * angle /
-                   (SERVO_ANGLE_MAX - SERVO_ANGLE_MIN));
+                   (SERVO_FULL_ANGLE - SERVO_ANGLE_MIN));
 
     // 换算成 LEDC duty：duty = 脉宽 / 周期 * 最大duty
     // 周期 = 1 / 50Hz = 20ms = 20000us
