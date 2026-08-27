@@ -53,6 +53,7 @@ void follow()
     float turn_speed_2 = 0.1;
     int keep_time = 1;        // 一轮时间
     int turn_delay_time = 100; // 转弯延迟时间
+    int turn_end_flag = 0;
 
     int turn_state = 0; // 转向状态，决定这次follow是转向还是直行
     int IR[4];
@@ -67,30 +68,53 @@ void follow()
     }
     else if (count == 3)
     {
-        if (IR[0] == 0) // 黑白白白，左修正
+        if(turn_end_flag == 0)
         {
-            motor_turn_left(for_speed, turn_kp2);
-            motorB_stop();
-        }
-        else if (IR[3] == 0) // 白白白黑，右修正
-        {
-            motor_turn_right(for_speed, turn_kp2);
-            motorB_stop();
-        }
-        else if (IR[2] == 0) // 白白黑白
-        {
-            motor_turn_right(for_speed, turn_kp1);
-            motorB_stop();
-        }
-        else if (IR[1] == 0) // 白黑白白
-        {
-            motor_turn_left(for_speed, turn_kp1);
-            motorB_stop();
+            if (IR[0] == 0) // 黑白白白，左修正
+            {
+                motor_turn_left(for_speed, turn_kp2);
+                motorB_stop();
+            }
+            else if (IR[3] == 0) // 白白白黑，右修正
+            {
+                motor_turn_right(for_speed, turn_kp2);
+                motorB_stop();
+            }
+            else if (IR[2] == 0) // 白白黑白
+            {
+                motor_turn_right(for_speed, turn_kp1);
+                motorB_stop();
+            }
+            else if (IR[1] == 0) // 白黑白白
+            {
+                motor_turn_left(for_speed, turn_kp1);
+                motorB_stop();
+            }
+            else
+            {
+                motor_forward(for_speed);
+                turn_end_flag = 0;
+                motorB_stop();
+            }
         }
         else
         {
-            motor_forward(for_speed);
-            motorB_stop();
+            if (IR[0] == 0) // 黑白白白，左修正
+            {
+                motor_turn_left(for_speed, turn_kp2);
+                motorB_stop();
+            }
+            else if (IR[3] == 0) // 白白白黑，右修正
+            {
+                motor_turn_right(for_speed, turn_kp2);
+                motorB_stop();
+            }
+            else
+            {
+                motor_forward(for_speed);
+                turn_end_flag = 0;
+                motorB_stop();
+            }
         }
     }
     else if (count == 2)
@@ -102,12 +126,15 @@ void follow()
         {
             // motor_turn_right(for_speed, turn_kp1);
             // motorB_stop();
+            if(turn_end_flag == 1)break;
             vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
             motor_turn_plus_CW(turn_speed_2);
             break;
         }
         case 6: // 白黑黑白，直行
         {
+            
+            turn_end_flag = 0;
             motor_forward(for_speed);
             motorB_stop();
             break;
@@ -116,6 +143,7 @@ void follow()
         {
             // motor_turn_left(for_speed, turn_kp1);
             // motorB_stop();
+            if(turn_end_flag == 1)break;
             vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
             motor_turn_plus_CCW(turn_speed_2);
             break;
@@ -132,12 +160,14 @@ void follow()
             motor_forward(for_speed);
             vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
             motor_turn_plus_CW(turn_speed_2);
+            turn_end_flag = 1;
         }
         else if (IR[2] == 1 || IR[3] == 1) // 黑黑白黑，黑黑黑白，左转
         {
             motor_forward(for_speed);
             vTaskDelay(pdMS_TO_TICKS(turn_delay_time));
             motor_turn_plus_CCW(turn_speed_2);
+            turn_end_flag = 1;
         }
         else
         {
