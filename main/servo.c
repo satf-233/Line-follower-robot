@@ -19,12 +19,17 @@
 #define SERVO_PULSE_MIN_US  500    // 0°   对应脉宽
 #define SERVO_PULSE_MAX_US  2500   // 180° 对应脉宽
 
-// 角度范围。最小角度都是 0°，但两个舵机的最大角度不同：
-// 舵机2（SERVO2）因安装空间受限，实际最多只能转到 100°
-#define SERVO_ANGLE_MIN     0
-#define SERVO_FULL_ANGLE    180   // 满行程角度，用于脉宽换算（不是限幅上限）
-#define SERVO1_ANGLE_MAX    180   // 舵机1 最大角度
-#define SERVO2_ANGLE_MAX    100   // 舵机2 最大角度（受空间限制）
+// 电信号换算基准：0° 对应 500us，180° 对应 2500us（两个舵机共用）
+#define SERVO_MIN_ANGLE     0     // 换算基准最小角度
+#define SERVO_FULL_ANGLE    180   // 满行程角度，用于脉宽换算
+
+// 每个舵机的实际角度范围（受安装/空间限制）：
+// 舵机1：45°~135°
+// 舵机2：0°~100°
+#define SERVO1_ANGLE_MIN    45
+#define SERVO1_ANGLE_MAX    135
+#define SERVO2_ANGLE_MIN    0
+#define SERVO2_ANGLE_MAX    100
 
 // 两个舵机使用的 LEDC 通道（utils.c 的电机 PWM 会从 0 开始占用通道，这里用高位通道避开）
 #define SERVO1_CHANNEL      LEDC_CHANNEL_6
@@ -96,12 +101,14 @@ void servo_set_angle(gpio_num_t gpio_num, int angle)
         return;
     }
 
-    // 每个舵机的最大角度不同：舵机2 因空间限制最大只能到 100°
-    int angle_max = (gpio_num == SERVO2_GPIO) ? SERVO2_ANGLE_MAX : SERVO1_ANGLE_MAX;
+    // 每个舵机的角度范围不同（见上方宏定义）
+    bool is_servo1 = (gpio_num == SERVO1_GPIO);
+    int angle_min = is_servo1 ? SERVO1_ANGLE_MIN : SERVO2_ANGLE_MIN;
+    int angle_max = is_servo1 ? SERVO1_ANGLE_MAX : SERVO2_ANGLE_MAX;
 
-    // 角度限幅到 [0°, 最大角度]
-    if (angle < SERVO_ANGLE_MIN) {
-        angle = SERVO_ANGLE_MIN;
+    // 角度限幅到各自范围
+    if (angle < angle_min) {
+        angle = angle_min;
     } else if (angle > angle_max) {
         angle = angle_max;
     }
@@ -109,7 +116,7 @@ void servo_set_angle(gpio_num_t gpio_num, int angle)
     // 按角度换算脉宽（us）
     uint32_t pulse_us = SERVO_PULSE_MIN_US +
         (uint32_t)((SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US) * angle /
-                   (SERVO_FULL_ANGLE - SERVO_ANGLE_MIN));
+                   (SERVO_FULL_ANGLE - SERVO_MIN_ANGLE));
 
     // 换算成 LEDC duty：duty = 脉宽 / 周期 * 最大duty
     // 周期 = 1 / 50Hz = 20ms = 20000us
