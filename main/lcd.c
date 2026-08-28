@@ -1,23 +1,14 @@
 /*
- * ST7735S 1.8" 128x160 TFT LCD 显示驱动（SPI），
- * 仅用于显示四路红外传感器 IR1~IR4 的状态，风格为精简的数码管（7 段）。
+ * ST7735S 1.8" 128x160 TFT LCD 显示驱动（SPI）。
+ * 用于显示超声波距离，采用 8x16 点阵字体（仿宋体），黑底白字。
  *
- * 引脚（见 pins.h）：
- *   LCD_RST=GPIO21  LCD_DC=GPIO15  LCD_SDI(GPIO16)
- *   LCD_SCK=GPIO13  LCD_CS=GPIO14
- *
- * ===== 数码管显示规则（已在注释中标明）=====
- *   - 数字顺序（从左到右）：IR1, IR2, IR3, IR4
- *   - 上排小号(绿色)：通道号 1~4
- *   - 下排大号(红色)：该通道当前电平
- *   - 电平 -> 数字（沿用工程约定：黑线=低/0，白底=高/1）：
- *        高电平 gpio_get_level()==1 (白底/未压线) -> 显示数字 '1'
- *        低电平 gpio_get_level()==0 (压到黑线)   -> 显示数字 '0'
+ * 显示格式：第一行 "Dist : xx"（cm，整数，四舍五入，2 位；负值显示 "Dist : --"）。
+ * 字号 / 位置 / 字符间距均通过下方宏调整。
  */
 
 #include "lcd.h"
 #include "pins.h"
-
+#include "encoder.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 
@@ -37,27 +28,32 @@
 #define LCD_SPI_CLK_HZ  (20 * 1000 * 1000)   // ST7735S：20MHz 稳妥；可逐步升到 32MHz
 
 // 显示方向/色彩（MADCTL，ST7735S）
-//   0xC8 = MX|MY|BGR（常见 1.8" 128x160 红/黑 tab）。若红蓝对调改成 0xC0；镜像/旋转可调 MX(0x40)/MY(0x80)/MV(0x20)。
-#define LCD_MADCTL      0xC8
+#define LCD_MADCTL      0xC0
 
-// ST7735S 列/行偏移（不同 tab 面板差异；常见 1.8" 128x160 为 0。若画面整体偏移可微调）
+// ST7735S 列/行偏移
 #define LCD_OFFSET_X    0
 #define LCD_OFFSET_Y    0
 
 /* ======================== 颜色 ======================== */
-#define LCD_COLOR_BLACK 0x0000   // 背景
-#define LCD_COLOR_GHOST 0x2108   // 未点亮段（暗灰，形成数码管轮廓）
-#define LCD_COLOR_VALUE 0xF800   // 电平数值点亮（红）
-#define LCD_COLOR_IDX   0x07E0   // 通道号点亮（绿）
+#define LCD_COLOR_BLACK 0x0000
+#define LCD_COLOR_WHITE 0xFFFF
+#define LCD_COLOR_FG    LCD_COLOR_WHITE   // 前景（白字）
+#define LCD_COLOR_BG    LCD_COLOR_BLACK   // 背景（黑底）
 
-/* ======================== 数码管布局 ======================== */
-#define IDX_DIGIT_W 16           // 通道号（小）
-#define IDX_DIGIT_H 24
-#define VAL_DIGIT_W 26           // 电平数值（大）
-#define VAL_DIGIT_H 44
-#define IDX_TOP_Y   26
-#define VAL_TOP_Y   76
-// 某列中心 x：16 + index*32  (i=0..3 -> 16,48,80,112)
+/* ======================== 文本显示参数 ======================== */
+#define FONT_W          8    // 字模宽（像素）
+#define FONT_H          16   // 字模高（像素）
+#define LCD_TEXT_SCALE  1    // 字号：放大倍数（1=原始 8x16；2=16x32，注意 9 字符会超出屏宽）
+#define LCD_COL_GAP     2    // 字符间距
+// 文字纵向位置（改这里调整上下位置）
+#define LCD_TEXT_Y      25
+
+// 三台电机(A/B/D)脉冲数的行位置：在 Dist 下方，行距=字高+4px
+#define LCD_LINE_STRIDE (FONT_H * LCD_TEXT_SCALE + 4)
+#define LCD_TEXT_Y_A    (LCD_TEXT_Y + LCD_LINE_STRIDE)
+#define LCD_TEXT_Y_B    (LCD_TEXT_Y_A + LCD_LINE_STRIDE)
+#define LCD_TEXT_Y_D    (LCD_TEXT_Y_B + LCD_LINE_STRIDE)
+
 
 /* ======================== 静态变量 ======================== */
 static spi_device_handle_t s_spi;
@@ -77,22 +73,18 @@ static void lcd_spi_write(const uint8_t *data, size_t len)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
-static void lcd_cs_low(void)  { gpio_set_level(LCD_CS, 0); }
-static void lcd_cs_high(void) { gpio_set_level(LCD_CS, 1); }
 static void lcd_dc_low(void)  { gpio_set_level(LCD_DC, 0); }
 static void lcd_dc_high(void) { gpio_set_level(LCD_DC, 1); }
 
-// 在单次 CS 拉低事务里发送：命令字节 + 可选数据字节（DC 先低后高）
+//命令字节 + 可选数据字节（DC 先低后高）
 static void lcd_send_cmd_with_data(uint8_t cmd, const uint8_t *data, size_t len)
 {
-    lcd_cs_low();
     lcd_dc_low();
     lcd_spi_write(&cmd, 1);
     if (len) {
         lcd_dc_high();
         lcd_spi_write(data, len);
     }
-    lcd_cs_high();
 }
 
 static void lcd_send_cmd(uint8_t cmd)
@@ -100,15 +92,10 @@ static void lcd_send_cmd(uint8_t cmd)
     lcd_send_cmd_with_data(cmd, NULL, 0);
 }
 
-// 开始/结束一次连续的数据写入（用于 ramwr 大数据，CS 保持拉低）
+// 开始/结束一次连续的数据写入（用于 ramwr 大数据）
 static void lcd_begin_data(void)
 {
-    lcd_cs_low();
     lcd_dc_high();
-}
-static void lcd_end_data(void)
-{
-    lcd_cs_high();
 }
 
 /* ======================== 窗口 / 填充 ======================== */
@@ -169,53 +156,120 @@ static void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t w, uint16_t h, uint
     if (n) {
         lcd_spi_write(buf, (size_t)n * 2);   // buf 全是同一像素颜色，取前 n*2 字节即可
     }
-
-    lcd_end_data();
 }
 
-/* ======================== 7 段数码管 ======================== */
+/* ======================== 点阵字体（仿宋体） ======================== */
+// 8x16 字模：每个字符 16 字节，每字节为一行，MSB(0x80) 为最左列。
 
-// seg 位定义：a=1<<0 b=1<<1 c=1<<2 d=1<<3 e=1<<4 f=1<<5 g=1<<6
-static const uint8_t s_seg_map[10] = {
-    0x3F, // 0: a b c d e f
-    0x06, // 1: b c
-    0x5B, // 2: a b g e d
-    0x4F, // 3: a b g c d
-    0x66, // 4: f g b c
-    0x6D, // 5: a f g c d
-    0x7D, // 6: a f g e d c
-    0x07, // 7: a b c
-    0x7F, // 8: a b c d e f g
-    0x6F, // 9: a b c d f g
-};
+static const uint8_t font_0[16] = {
+    0x00,0x3C,0x66,0xC3,0xC3,0xC3,0xC3,0xC3,
+    0xC3,0xC3,0xC3,0xC3,0xC3,0x66,0x3C,0x00 };
+static const uint8_t font_1[16] = {
+    0x00,0x18,0x38,0x18,0x18,0x18,0x18,0x18,
+    0x18,0x18,0x18,0x18,0x18,0x18,0x7E,0x00 };
+static const uint8_t font_2[16] = {
+    0x00,0x3C,0x66,0xC3,0xC3,0xC3,0x03,0x03,
+    0x06,0x0C,0x18,0x30,0x60,0xC0,0xFF,0x00 };
+static const uint8_t font_3[16] = {
+    0x00,0x3C,0x66,0xC3,0xC3,0x03,0x06,0x0C, 
+    0x06,0x03,0x03,0xC3,0xC3,0x66,0x3C,0x00 };
+static const uint8_t font_4[16] = {
+    0x00,0x06,0x06,0x0E,0x1E,0x36,0x66,0xC6,
+    0xC6,0xFF,0x06,0x06,0x06,0x06,0x06,0x00 };
+static const uint8_t font_5[16] = {
+    0x00,0xFF,0xC0,0xC0,0xC0,0xFC,0x06,0x03,
+    0x03,0xC3,0xC3,0xC3,0xC3,0x66,0x3C,0x00 };
+static const uint8_t font_6[16] = {
+    0x00,0x3C,0x66,0xC3,0xC0,0xC0,0xFC,0xC6,
+    0xC3,0xC3,0xC3,0xC3,0xC3,0x66,0x3C,0x00 };
+static const uint8_t font_7[16] = {
+    0x00,0xFF,0x03,0x03,0x06,0x0C,0x0C,0x18,
+    0x18,0x18,0x30,0x30,0x30,0x30,0x30,0x30 };
+static const uint8_t font_8[16] = {
+    0x00,0x3C,0x66,0xC3,0xC3,0xC3,0x66,0x3C,
+    0x66,0xC3,0xC3,0xC3,0xC3,0x66,0x3C,0x00 };
+static const uint8_t font_9[16] = {
+    0x00,0x3C,0x66,0xC3,0xC3,0xC3,0xC3,0xC3,
+    0x63,0x3F,0x03,0x03,0x03,0x66,0x3C,0x00 };
+static const uint8_t font_D[16] = {
+    0x00,0xF8,0x86,0x83,0x83,0x83,0x83,0x83,
+    0x83,0x83,0x83,0x83,0x83,0xC6,0xF8,0x00 };
+static const uint8_t font_i[16] = {
+    0x00,0x18,0x18,0x00,0x18,0x18,0x18,0x18,
+    0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00 };
+static const uint8_t font_s[16] = {
+    0x00,0x00,0x3C,0x66,0xC0,0xC0,0x7C,0x06,
+    0x03,0x03,0x83,0x66,0x3C,0x00,0x00,0x00 };
+static const uint8_t font_t[16] = {
+    0x00,0x00,0x18,0x18,0x7E,0x18,0x18,0x18,
+    0x18,0x18,0x18,0x18,0x18,0x0C,0x00,0x00 };
+static const uint8_t font_colon[16] = {
+    0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,
+    0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00 };
+static const uint8_t font_minus[16] = {
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x7E,0x7E,0x00,0x00,0x00,0x00,0x00 };
+static const uint8_t font_space[16] = { 0 };
 
-// 在 (dx,dy) 处绘制一个 7 段数码管数字 digit(0~9)，尺寸 w x h。
-//   lit = 点亮段颜色；dark = 未点亮段颜色；先清空整个单元为黑色，避免残留。
-static void lcd_draw_7seg_digit(uint16_t dx, uint16_t dy, uint16_t w, uint16_t h,
-                                uint8_t digit, uint16_t lit, uint16_t dark)
+// 取得某个字符对应的字模
+static const uint8_t *font_glyph(char c)
 {
-    uint16_t t    = w / 5;
-    if (t < 2) t  = 2;
-    uint16_t half = h / 2;
-    uint8_t segs  = s_seg_map[digit % 10];
-
-    // 清空单元
-    lcd_fill_rect(dx, dy, w, h, LCD_COLOR_BLACK);
-
-    // 段几何（a 上, b 右上, c 右下, d 下, e 左下, f 左上, g 中）
-    uint16_t sx[7] = { dx + t,      dx + w - t,  dx + w - t,  dx + t,
-                       dx,          dx,          dx + t };
-    uint16_t sy[7] = { dy,          dy + t,      dy + half,   dy + h - t,
-                       dy + half,   dy + t,      dy + half - t / 2 };
-    uint16_t sw[7] = { w - 2 * t,   t,           t,           w - 2 * t,
-                       t,           t,           w - 2 * t };
-    uint16_t sh[7] = { t,           half - t,    half - t,    t,
-                       half - t,    half - t,    t };
-
-    for (int i = 0; i < 7; i++) {
-        uint16_t col = (segs & (1u << i)) ? lit : dark;
-        lcd_fill_rect(sx[i], sy[i], sw[i], sh[i], col);
+    static const uint8_t *const digits[10] = {
+        font_0, font_1, font_2, font_3, font_4,
+        font_5, font_6, font_7, font_8, font_9
+    };
+    if (c >= '0' && c <= '9') {
+        return digits[c - '0'];
     }
+    switch (c) {
+        case 'D':  return font_D;
+        case 'i':  return font_i;
+        case 's':  return font_s;
+        case 't':  return font_t;
+        case ':':  return font_colon;
+        case '-':  return font_minus;
+        default:   return font_space;
+    }
+}
+
+// 绘制单个字符（scale 为放大倍数）：先整体清背景，再画前景像素
+static void lcd_draw_char(uint16_t x, uint16_t y, char ch, uint8_t scale,
+                          uint16_t fg, uint16_t bg)
+{
+    const uint8_t *g = font_glyph(ch);
+    uint16_t w = FONT_W * scale;
+    uint16_t h = FONT_H * scale;
+
+    lcd_fill_rect(x, y, w, h, bg);   // 清掉该字符格
+
+    for (uint8_t r = 0; r < FONT_H; r++) {
+        uint8_t bits = g[r];
+        for (uint8_t c = 0; c < FONT_W; c++) {
+            if (bits & (0x80u >> c)) {
+                lcd_fill_rect(x + c * scale, y + r * scale, scale, scale, fg);
+            }
+        }
+    }
+}
+
+// 依次绘制字符串（自动按字符间距前进）
+static void lcd_draw_text(uint16_t x, uint16_t y, const char *s, uint8_t scale,
+                          uint16_t fg, uint16_t bg)
+{
+    while (*s) {
+        lcd_draw_char(x, y, *s++, scale, fg, bg);
+        x += (FONT_W * scale) + LCD_COL_GAP;
+    }
+}
+
+// 整行水平居中显示
+static void lcd_draw_text_centered(uint16_t y, const char *s, uint8_t scale,
+                                   uint16_t fg, uint16_t bg)
+{
+    size_t n = strlen(s);
+    uint16_t w = (n ? (uint16_t)(n * (FONT_W * scale) + (n - 1) * LCD_COL_GAP) : 0);
+    uint16_t x = (w >= LCD_H_RES) ? 0 : (LCD_H_RES - w) / 2;
+    lcd_draw_text(x, y, s, scale, fg, bg);
 }
 
 /* ======================== 初始化序列 ======================== */
@@ -270,19 +324,14 @@ static const lcd_cmd_t lcd_init_cmds[] = {
 
 void lcd_init(void)
 {
-    // 1) 输出 GPIO：RST / DC / CS（SCK/MOSI 由 SPI 总线配置）
+    // 1) 输出 GPIO：DC（RST 接 VCC 常非复位、CS 接 GND 常选中；SCK/MOSI 由 SPI 总线配置）
     gpio_config_t io = {
-        .pin_bit_mask = (1ULL << LCD_RST) | (1ULL << LCD_DC) | (1ULL << LCD_CS),
+        .pin_bit_mask = (1ULL << LCD_DC),
         .mode         = GPIO_MODE_OUTPUT,
     };
     gpio_config(&io);
 
-    // 2) 硬件复位
-    gpio_set_level(LCD_CS, 1);
-    gpio_set_level(LCD_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(LCD_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(120));
+    // 2) 复位：由初始化序列中的 SWRESET(0x01) 做软件复位，无需硬件 RST
 
     // 3) SPI 总线 + 设备
     spi_bus_config_t buscfg = {
@@ -298,7 +347,7 @@ void lcd_init(void)
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = LCD_SPI_CLK_HZ,
         .mode           = 0,
-        .spics_io_num   = -1,            // CS 用 GPIO 手动控制
+        .spics_io_num   = -1,           
         .queue_size     = 1,
         .flags          = SPI_DEVICE_HALFDUPLEX,
     };
@@ -321,23 +370,48 @@ void lcd_init(void)
     lcd_fill_rect(0, 0, LCD_H_RES, LCD_V_RES, LCD_COLOR_BLACK);
 }
 
-void lcd_show_ir(uint8_t ir1, uint8_t ir2, uint8_t ir3, uint8_t ir4)
+void lcd_show_dist(float dist)
 {
-    uint8_t vals[4] = { ir1, ir2, ir3, ir4 };
+    // 显示 "Dist : xx"（cm，整数，四舍五入，2 位）；负值（无回波/超量程）显示 "Dist : --"
+    char buf[16];
 
-    for (int i = 0; i < 4; i++) {
-        uint16_t cx = 16 + i * 32;   // 列中心
+    if (dist < 0) {
+        strcpy(buf, "Dist : --");
+    } else {
+        int v = (int)(dist + 0.5f);
+        if (v < 0)  v = 0;
+        if (v > 99) v = 99;
+        buf[0] = 'D'; buf[1] = 'i'; buf[2] = 's'; buf[3] = 't';
+        buf[4] = ' '; buf[5] = ':'; buf[6] = ' ';
+        buf[7] = (char)('0' + v / 10);
+        buf[8] = (char)('0' + v % 10);
+        buf[9] = '\0';
+    }
 
-        // 上排：通道号 1~4（绿色，小号）
-        lcd_draw_7seg_digit(cx - IDX_DIGIT_W / 2, IDX_TOP_Y,
-                            IDX_DIGIT_W, IDX_DIGIT_H,
-                            (uint8_t)(i + 1),
-                            LCD_COLOR_IDX, LCD_COLOR_GHOST);
+    lcd_draw_text_centered(LCD_TEXT_Y, buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
+}
 
-        // 下排：电平值（红色，大号）。高电平->1，低电平->0。
-        uint8_t v = (vals[i] != 0) ? 1 : 0;
-        lcd_draw_7seg_digit(cx - VAL_DIGIT_W / 2, VAL_TOP_Y,
-                            VAL_DIGIT_W, VAL_DIGIT_H,
-                            v, LCD_COLOR_VALUE, LCD_COLOR_GHOST);
+// 显示三台电机(A/B/D)的累计脉冲数，各显示两位整数(0~99)，自上而下分布在 Dist 下方
+void lcd_show_count()
+{
+    int32_t a = encoder_get_pulses(MOTOR_A);
+    int32_t b = encoder_get_pulses(MOTOR_B);
+    int32_t d = encoder_get_pulses(MOTOR_D);
+    const int32_t vals[3] = { a, b, d };
+    const uint16_t ys[3]  = { LCD_TEXT_Y_A, LCD_TEXT_Y_B, LCD_TEXT_Y_D };
+    char buf[3];
+
+    for (int i = 0; i < 3; i++) {
+        int32_t v = vals[i];
+        if (v < 0) v = -v;        // 负数取绝对值
+        v %= 100;                 // 只取两位 0~99
+
+        // 先清整行，避免上次更长/更短的数字残留（防鬼影）
+        lcd_fill_rect(0, ys[i], LCD_H_RES, FONT_H * LCD_TEXT_SCALE, LCD_COLOR_BG);
+
+        buf[0] = (char)('0' + v / 10);
+        buf[1] = (char)('0' + v % 10);
+        buf[2] = '\0';
+        lcd_draw_text_centered(ys[i], buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
     }
 }
