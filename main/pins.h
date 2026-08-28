@@ -46,9 +46,10 @@
 #define SERVO2_GPIO     GPIO_NUM_45
 
 // ===== 液晶屏（ST7735S，SPI 串口 7Pin）=====
-#define LCD_DC  GPIO_NUM_37
-#define LCD_SDI GPIO_NUM_36
-#define LCD_SCK GPIO_NUM_35
+#define LCD_RST GPIO_NUM_43
+#define LCD_DC  GPIO_NUM_44
+#define LCD_SDI GPIO_NUM_40
+#define LCD_SCK GPIO_NUM_39
 
 // ===== 超声波测距传感器（HC-SR04）=====
 #define TRIG GPIO_NUM_5
