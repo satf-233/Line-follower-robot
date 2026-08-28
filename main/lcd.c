@@ -45,8 +45,8 @@
 #define FONT_H          16   // 字模高（像素）
 #define LCD_TEXT_SCALE  1    // 字号：放大倍数（1=原始 8x16；2=16x32，注意 9 字符会超出屏宽）
 #define LCD_COL_GAP     2    // 字符间距
-// 文字纵向位置（改这里调整上下位置；默认垂直居中）
-#define LCD_TEXT_Y      25//((LCD_V_RES - (FONT_H * LCD_TEXT_SCALE)) / 2)
+// 文字纵向位置（改这里调整上下位置）
+#define LCD_TEXT_Y      25
 
 
 /* ======================== 静态变量 ======================== */
@@ -67,22 +67,18 @@ static void lcd_spi_write(const uint8_t *data, size_t len)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
-static void lcd_cs_low(void)  { gpio_set_level(LCD_CS, 0); }
-static void lcd_cs_high(void) { gpio_set_level(LCD_CS, 1); }
 static void lcd_dc_low(void)  { gpio_set_level(LCD_DC, 0); }
 static void lcd_dc_high(void) { gpio_set_level(LCD_DC, 1); }
 
-// 在单次 CS 拉低事务里发送：命令字节 + 可选数据字节（DC 先低后高）
+//命令字节 + 可选数据字节（DC 先低后高）
 static void lcd_send_cmd_with_data(uint8_t cmd, const uint8_t *data, size_t len)
 {
-    lcd_cs_low();
     lcd_dc_low();
     lcd_spi_write(&cmd, 1);
     if (len) {
         lcd_dc_high();
         lcd_spi_write(data, len);
     }
-    lcd_cs_high();
 }
 
 static void lcd_send_cmd(uint8_t cmd)
@@ -90,15 +86,10 @@ static void lcd_send_cmd(uint8_t cmd)
     lcd_send_cmd_with_data(cmd, NULL, 0);
 }
 
-// 开始/结束一次连续的数据写入（用于 ramwr 大数据，CS 保持拉低）
+// 开始/结束一次连续的数据写入（用于 ramwr 大数据）
 static void lcd_begin_data(void)
 {
-    lcd_cs_low();
     lcd_dc_high();
-}
-static void lcd_end_data(void)
-{
-    lcd_cs_high();
 }
 
 /* ======================== 窗口 / 填充 ======================== */
@@ -159,8 +150,6 @@ static void lcd_fill_rect(uint16_t x0, uint16_t y0, uint16_t w, uint16_t h, uint
     if (n) {
         lcd_spi_write(buf, (size_t)n * 2);   // buf 全是同一像素颜色，取前 n*2 字节即可
     }
-
-    lcd_end_data();
 }
 
 /* ======================== 点阵字体（仿宋体） ======================== */
@@ -329,19 +318,14 @@ static const lcd_cmd_t lcd_init_cmds[] = {
 
 void lcd_init(void)
 {
-    // 1) 输出 GPIO：RST / DC / CS（SCK/MOSI 由 SPI 总线配置）
+    // 1) 输出 GPIO：DC（RST 接 VCC 常非复位、CS 接 GND 常选中；SCK/MOSI 由 SPI 总线配置）
     gpio_config_t io = {
-        .pin_bit_mask = (1ULL << LCD_RST) | (1ULL << LCD_DC) | (1ULL << LCD_CS),
+        .pin_bit_mask = (1ULL << LCD_DC),
         .mode         = GPIO_MODE_OUTPUT,
     };
     gpio_config(&io);
 
-    // 2) 硬件复位
-    gpio_set_level(LCD_CS, 1);
-    gpio_set_level(LCD_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(LCD_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(120));
+    // 2) 复位：由初始化序列中的 SWRESET(0x01) 做软件复位，无需硬件 RST
 
     // 3) SPI 总线 + 设备
     spi_bus_config_t buscfg = {
@@ -357,7 +341,7 @@ void lcd_init(void)
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = LCD_SPI_CLK_HZ,
         .mode           = 0,
-        .spics_io_num   = -1,            // CS 用 GPIO 手动控制
+        .spics_io_num   = -1,           
         .queue_size     = 1,
         .flags          = SPI_DEVICE_HALFDUPLEX,
     };
