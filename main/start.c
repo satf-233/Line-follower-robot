@@ -81,7 +81,7 @@ void start(void)
         //默认为循迹状态
         if(state == 1){
             
-            follow(led_strip); //用时1ms
+            follow(led_strip); 
             
             //进入距离阈值
             int Dis_thre = 10;
@@ -103,10 +103,10 @@ void start(void)
         else if(state == 2){
             count = 0;
 
-            //避障完成后返回循迹状态
+            //避障完成后进入循迹-停止状态
             if (avoid_run() == true){
                 motor_stop();
-                state = 1; //修改为“停止”状态。
+                state = 3;
             }
             else{
                 //不进行任何处理
@@ -115,7 +115,17 @@ void start(void)
 
         //循迹-停止状态，加入4黑停止逻辑
         else if (state == 3) {
-            
+            //循迹，当出现4黑时直接跳出循环
+            if(follow_to_stop(led_strip) == 1){
+                break;
+            }
+
+            //每100ms刷新显示距离
+            if (count > 100) {
+                count = 0;
+                lcd_show_dist(avoid_measure_cm());
+            }
+            count++;
         }
 
         //未知状态，跳出循环并停止
@@ -125,4 +135,3 @@ void start(void)
     }
     motor_stop();
 }
-

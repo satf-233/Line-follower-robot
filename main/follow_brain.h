@@ -11,6 +11,6 @@ void ir_init(void);
 //循迹函数，自动调取红外传感器四路数据，判断路况，并发出转向指令
 void follow(led_strip_handle_t led_strip);
 
-int follow_to_stop(led_strip_handle_t led_strip)
+int follow_to_stop(led_strip_handle_t led_strip);
 
 #endif // FOLLOW_BRAIN_H
