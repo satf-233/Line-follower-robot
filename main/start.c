@@ -1,6 +1,7 @@
 #include "start.h"
 #include "motor.h"
 #include "lcd.h"
+#include "avoid.h"
 #include "follow_brain.h"
 #include "pins.h"
 #include "driver/gpio.h"
@@ -39,10 +40,13 @@ void start(void)
 {    
     motor_init();
     ir_init();   // 先初始化，follow() 才能读到电平
-    lcd_init();  // 液晶屏幕初始化  
+    lcd_init();  // 液晶屏幕初始化
+    avoid_init();// 超声波传感器初始化
+    //TODO:将所有初始化函数包含到同一个头文件当中  
 
     wait_boot_press();   // 等按一下 BOOT 再运行
 
+    
     // led配置
     led_strip_handle_t led_strip;
 
@@ -70,14 +74,55 @@ void start(void)
 
     double speed = 0.16;
     motor_forward(speed);
+    int count = 0;
+    int state = 1;
     while (1)
     {
-        follow(led_strip);
-        //把四路电平IR1~IR4从左往右依次显示
-        lcd_show_ir((uint8_t)gpio_get_level(IR1),
-                    (uint8_t)gpio_get_level(IR2),
-                    (uint8_t)gpio_get_level(IR3),
-                    (uint8_t)gpio_get_level(IR4));
+        //默认为循迹状态
+        if(state == 1){
+            
+            follow(led_strip); //用时1ms
+            
+            //进入距离阈值
+            int Dis_thre = 10;
+            //每100ms判断一次前方是否有障碍物和显示距离
+            if (count > 100) {
+                count = 0;
+                float dis = avoid_measure_cm();
+                lcd_show_dist(dis);
+                if (dis < Dis_thre && dis > 0){
+                    motor_stop();
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    state = 2;
+                }
+            }
+            count++;
+        }
+
+        //避障状态，不会连续两次进入该状态
+        else if(state == 2){
+            count = 0;
+
+            //避障完成后返回循迹状态
+            if (avoid_run() == true){
+                motor_stop();
+                state = 1; //修改为“停止”状态。
+            }
+            else{
+                //不进行任何处理
+            }
+        }
+
+        //循迹-停止状态，加入4黑停止逻辑
+        else if (state == 3) {
+            
+        }
+
+        //未知状态，跳出循环并停止
+        else{
+            break;
+        }
     }
     motor_stop();
 }
+

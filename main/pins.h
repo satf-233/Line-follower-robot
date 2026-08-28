@@ -29,11 +29,6 @@
 #define DIN1  GPIO_NUM_42
 #define DIN2  GPIO_NUM_41
 
-// ===== 舵机（MG90S，两个）=====
-// servo0控制俯仰角，servo1控制水平旋转
-#define SERVO1_GPIO     GPIO_NUM_3
-#define SERVO2_GPIO     GPIO_NUM_46
-
 // ===== 1.8寸 TFT 液晶屏（ST7735S，SPI 串口 7Pin）=====
 // 引脚：RST / D/C / SDI(MOSI) / SCK / CS
 #define LCD_RST GPIO_NUM_21
@@ -41,5 +36,9 @@
 #define LCD_SDI GPIO_NUM_16
 #define LCD_SCK GPIO_NUM_13
 #define LCD_CS  GPIO_NUM_14
+
+// ===== 超声波测距传感器（HC-SR04）=====
+#define TRIG GPIO_NUM_1
+#define ECHO GPIO_NUM_2
 
 #endif // PINS_H
