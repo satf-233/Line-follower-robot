@@ -1,5 +1,5 @@
-#ifndef LCD_H
-#define LCD_H
+#ifndef IMAGE_H
+#define IMAGE_H
 
 #include <stdint.h>
 
@@ -18,4 +18,4 @@ void lcd_show_ir(uint8_t ir1, uint8_t ir2, uint8_t ir3, uint8_t ir4);
 }
 #endif
 
-#endif // LCD_H
+#endif // IMAGE_H
