@@ -28,7 +28,15 @@
 #define PWMD  GPIO_NUM_40
 #define DIN1  GPIO_NUM_42
 #define DIN2  GPIO_NUM_41
-
+// A电机
+#define E1A   GPIO_NUM_x
+#define E1B   GPIO_NUM_x
+// B电机
+#define E2A   GPIO_NUM_x
+#define E2B   GPIO_NUM_x
+// D电机
+#define E4A   GPIO_NUM_x
+#define E4B   GPIO_NUM_x
 // ===== 舵机（MG90S，两个）=====
 // servo0控制俯仰角，servo1控制水平旋转
 #define SERVO1_GPIO     GPIO_NUM_3
