@@ -50,4 +50,8 @@
 #define LCD_SCK GPIO_NUM_13
 #define LCD_CS  GPIO_NUM_14
 
+// ===== 超声波测距传感器（HC-SR04）=====
+#define TRIG GPIO_NUM_1
+#define ECHO GPIO_NUM_2
+
 #endif // PINS_H
