@@ -49,7 +49,7 @@
 #define LCD_TEXT_Y      25
 
 // 三台电机(A/B/D)脉冲数的行位置：在 Dist 下方，行距=字高+4px
-#define LCD_LINE_STRIDE (FONT_H * LCD_TEXT_SCALE + 4)
+#define LCD_LINE_STRIDE (FONT_H * LCD_TEXT_SCALE + 8)
 #define LCD_TEXT_Y_A    (LCD_TEXT_Y + LCD_LINE_STRIDE)
 #define LCD_TEXT_Y_B    (LCD_TEXT_Y_A + LCD_LINE_STRIDE)
 #define LCD_TEXT_Y_D    (LCD_TEXT_Y_B + LCD_LINE_STRIDE)
@@ -205,17 +205,87 @@ static const uint8_t font_9[16] = {
     0x00,0x3C,0x66,0xC3,0xC3,0xC3,0xC3,0xC3,
     0x63,0x3F,0x03,0x03,0x03,0x66,0x3C,0x00 };
 static const uint8_t font_D[16] = {
-    0x00,0xF8,0x86,0x83,0x83,0x83,0x83,0x83,
-    0x83,0x83,0x83,0x83,0x83,0xC6,0xF8,0x00 };
+    0x00,0xF8,0xC6,0xC3,0xC3,0xC3,0xC3,0xC3,
+    0xC3,0xC3,0xC3,0xC3,0xC3,0xC6,0xF8,0x00 };
+/*........
+#####...
+##...##.
+##....##
+##....##
+##....##
+##....##
+##....##
+##....##
+##....##
+##....##
+##....##
+##....##
+##...##.
+#####...
+........*/
+static const uint8_t font_A[16] = {
+    0x00,0x18,0x3C,0x66,0xC3,0xC3,0xC3,0xFF,
+    0xFF,0xC3,0xC3,0xC3,0xC3,0xC3,0x00,0x00 };
+static const uint8_t font_B[16] = {
+    0x00,0xFC,0xC6,0xC3,0xC3,0xC3,0xC6,0xFC,
+    0xC6,0xC3,0xC3,0xC3,0xC3,0xC6,0xFC,0x00 };
 static const uint8_t font_i[16] = {
-    0x00,0x18,0x18,0x00,0x18,0x18,0x18,0x18,
+    0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x18,
     0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00 };
+/*........
+........
+........
+...**...
+...**...
+........
+........
+...**...
+...**...
+...**...
+...**...
+...**...
+...**...
+...**...
+...**...
+........*/
 static const uint8_t font_s[16] = {
-    0x00,0x00,0x3C,0x66,0xC0,0xC0,0x7C,0x06,
-    0x03,0x03,0x83,0x66,0x3C,0x00,0x00,0x00 };
+    0x00,0x00,0x00,0x3C,0x66,0xC3,0xC0,0xC0,
+    0x7C,0x06,0x03,0x03,0xC3,0x66,0x3C,0x00 };
+/*........
+........    
+........
+..####..
+.##..##.
+##....##
+##......
+##......
+.#####..
+.....##.
+......##
+......##
+##....##
+.##..##.
+..####..
+........*/
 static const uint8_t font_t[16] = {
-    0x00,0x00,0x18,0x18,0x7E,0x18,0x18,0x18,
-    0x18,0x18,0x18,0x18,0x18,0x0C,0x00,0x00 };
+    0x00,0x00,000,0x18,0x18,0x7E,0x18,0x18,
+    0x18,0x18,0x18,0x18,0x1A,0x1A,0x0C,0x00};
+/*........
+........
+........
+...##...
+...##...
+.######.
+...##...
+...##...
+...##...
+...##...
+...##...
+...##...
+...##.#.
+...##.#.
+....##..
+........*/
 static const uint8_t font_colon[16] = {
     0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,
     0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00 };
@@ -235,6 +305,8 @@ static const uint8_t *font_glyph(char c)
         return digits[c - '0'];
     }
     switch (c) {
+        case 'A':  return font_A;
+        case 'B':  return font_B;
         case 'D':  return font_D;
         case 'i':  return font_i;
         case 's':  return font_s;
@@ -409,27 +481,49 @@ void lcd_show_dist(float dist)
     lcd_draw_text_centered(LCD_TEXT_Y, buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
 }
 
-// 显示三台电机(A/B/D)的累计脉冲数，各显示两位整数(0~99)，自上而下分布在 Dist 下方
-void lcd_show_count()
+// 显示三台电机(A/B/D)的累计脉冲数，各显示三位整数(0~999)，自上而下分布在 Dist 下方
+void lcd_show_speed()
 {
-    int32_t a = encoder_get_pulses(MOTOR_A);
-    int32_t b = encoder_get_pulses(MOTOR_B);
-    int32_t d = encoder_get_pulses(MOTOR_D);
-    const int32_t vals[3] = { a, b, d };
+    float a = encoder_get_rpm(MOTOR_A);
+    float b = encoder_get_rpm(MOTOR_B);
+    float d = encoder_get_rpm(MOTOR_D);
+    const float vals[3] = { a, b, d };
     const uint16_t ys[3]  = { LCD_TEXT_Y_A, LCD_TEXT_Y_B, LCD_TEXT_Y_D };
-    char buf[3];
+    char buf[7];
 
     for (int i = 0; i < 3; i++) {
-        int32_t v = vals[i];
-        if (v < 0) v = -v;        // 负数取绝对值
-        v %= 100;                 // 只取两位 0~99
+        int v = (int)vals[i];
+        v %= 1000;                 // 只取三位 0~999
 
         // 先清整行，避免上次更长/更短的数字残留（防鬼影）
         lcd_fill_rect(0, ys[i], LCD_H_RES, FONT_H * LCD_TEXT_SCALE, LCD_COLOR_BG);
 
-        buf[0] = (char)('0' + v / 10);
-        buf[1] = (char)('0' + v % 10);
-        buf[2] = '\0';
+        //显示的内容
+        if (i == 0) {
+            buf[0] = 'A';
+        }
+        if (i == 1){
+            buf[0] = 'B';
+        }
+        if (i == 2) {
+            buf[0] = 'D';
+        } 
+
+        buf[1] = ':'; 
+
+        if (v < 0) {
+            buf[2] = '-';
+        }
+        else {
+            buf[2] = ' ';
+            v = -v;
+        }
+
+        buf[3] = (char)('0' + v / 100);
+        buf[4] = (char)('0' + (v / 10) % 10);
+        buf[5] = (char)('0' + v % 10);
+        buf[6] = '\0';
+
         lcd_draw_text_centered(ys[i], buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
     }
 }
