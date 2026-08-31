@@ -92,6 +92,7 @@ void start(void)
                 count = 0;
                 float dis = avoid_measure_cm();
                 lcd_show_dist(dis);
+                lcd_show_speed();
                 if (dis < Dis_thre && dis > 0){
                     motor_stop();
                     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -126,6 +127,7 @@ void start(void)
             if (count > 100) {
                 count = 0;
                 lcd_show_dist(avoid_measure_cm());
+                lcd_show_speed();
             }
             count++;
         }

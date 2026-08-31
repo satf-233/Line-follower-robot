@@ -165,6 +165,7 @@ bool avoid_run(){
     //向左平移起步点火  
     Move_Fire(1);
     lcd_show_dist(avoid_measure_cm());
+    lcd_show_speed();
     while(1){
         
         //绕行状态，每轮时间约为100ms
@@ -175,13 +176,15 @@ bool avoid_run(){
             //若超声波检测得到前方没有障碍，则进入找回状态
             float dist = avoid_measure_cm();//用时1ms
             lcd_show_dist (dist);
+            lcd_show_speed();
             if (dist > findway_thre || dist < 0) {
 
-                //先保持平移运动500ms，保持距离显示刷新率不变
+                //先保持平移运动300ms，保持距离显示刷新率不变
                 int move_count = 0;
                 while (move_count < 3) {
                     vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
                     lcd_show_dist (avoid_measure_cm());
+                    lcd_show_speed();
                     move_count++;
                 }
                 move_count = 0;
@@ -194,12 +197,13 @@ bool avoid_run(){
 
         //找回状态，该状态不会连续两次进入
         else if (avoid_state == 2){
-            //大概率要先点火，然后保持，沿用上面的思路走5个循环，一次100ms
+            //沿用上面的思路走12个循环，一次100ms
             int forward_time = 100;
             int forward_count = 0;
             while (forward_count < 12){
                 nonline_forward();
                 lcd_show_dist(avoid_measure_cm());
+                lcd_show_speed();
                 vTaskDelay(pdMS_TO_TICKS(forward_time));
                 forward_count++;
             }
@@ -210,6 +214,7 @@ bool avoid_run(){
             //再向右平移
             Move_Fire(RIGHT_MOVE); //100ms
             lcd_show_dist(avoid_measure_cm());
+            lcd_show_speed();
             int sense_count = 0;
             
             while(1){
@@ -219,6 +224,7 @@ bool avoid_run(){
                 if (sense_count > 100) {
                     sense_count = 0;
                     lcd_show_dist(avoid_measure_cm()); 
+                    lcd_show_speed();
                 }
 
                 //读取红外传感器电平
