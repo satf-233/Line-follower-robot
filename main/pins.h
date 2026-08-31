@@ -18,10 +18,10 @@
 #define BOOT_GPIO       GPIO_NUM_0   // BOOT 按键（按下接 GND，低电平）
 
 // ===== 电机驱动（TB6612）=====
-#define PWMA  GPIO_NUM_18
+#define PWMA  GPIO_NUM_6
 #define AIN1  GPIO_NUM_15
 #define AIN2  GPIO_NUM_7
-#define PWMB  GPIO_NUM_17
+#define PWMB  GPIO_NUM_18
 #define BIN1  GPIO_NUM_3
 #define BIN2  GPIO_NUM_8
 #define PWMD  GPIO_NUM_14
