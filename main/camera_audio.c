@@ -741,7 +741,7 @@ int hsv_in_range(const HSVImage *hsv, const uint8_t lower[3], const uint8_t uppe
         bool ok = (in[0] >= lower[0] && in[0] <= upper[0]) &&
                   (in[1] >= lower[1] && in[1] <= upper[1]) &&
                   (in[2] >= lower[2] && in[2] <= upper[2]);
-        *out = ok ? 255 : 0;
+        *out = ok ? 0 : 255;   /* 反转：范围内=0(黑)，范围外=255(白) */
         in += 3;
         out += 1;
     }
@@ -787,6 +787,8 @@ bool get_mask(BWImage* mask)
     
     if (ret != CAM_OK) {
             ESP_LOGE(TAG, "抓帧失败: %d",ret);
+            free_rgb_image(&rgb);
+            free_hsv_image(&hsv);
             return false;
         }
     
@@ -796,9 +798,12 @@ bool get_mask(BWImage* mask)
     if(ret != CAM_OK)
     {
         ESP_LOGE(TAG, "滤图失败: %d",ret);
+        free_rgb_image(&rgb);
+        free_hsv_image(&hsv);
         return false;
     }
-
+    free_rgb_image(&rgb);
+    free_hsv_image(&hsv);
     return true;
 }
 

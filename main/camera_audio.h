@@ -110,7 +110,7 @@ typedef struct {
 void storage_load(void);
 
 /** 取图函数
- * @param mask 获取黑白图的存储指针
+ * @param mask 获取黑白图的存储指针，mask内data指向unsigned char 一维矩阵，借助height和width信息读取，约定黑色识别物体，白色为滤去背景
  * @return  false表示取图失败，mask中不是有效内容，true表示成功
  */
 bool get_mask(BWImage* mask);
@@ -213,7 +213,7 @@ int rgb_to_hsv(const RGBImage *rgb, HSVImage *hsv);
  * @param hsv    输入HSV图像
  * @param lower  下限 [H,S,V]
  * @param upper  上限 [H,S,V]
- * @param mask   输出二值掩码 (255=在范围内, 0=不在)，调用后需 free_bw_image() 释放
+ * @param mask   输出二值掩码 (0=在范围内, 255=不在)，调用后需 free_bw_image() 释放
  * @return       0=成功, 负数=错误码
  */
 int hsv_in_range(const HSVImage *hsv, const uint8_t lower[3], const uint8_t upper[3], BWImage *mask);
