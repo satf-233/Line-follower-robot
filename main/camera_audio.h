@@ -9,6 +9,18 @@
  * 目标芯片: ESP32-S3 (需带 PSRAM)
  */
 
+
+ /*
+ *  使用流程，务必按步骤调用
+ *  1. 挂载存储区
+ *  2.初始化摄像头(NULL 使用默认 640x480 @ 15fps)
+ *  3.启动视频流
+ *  4.调用图像获取函数
+ *  5.确认长时间(10s以上)不需要图像，则开始清理资源，包括关闭视频流，以及下行
+ *  6.关闭摄像头
+ * 
+ * tips：记得释放存取图像数据的动态内存，包括分配给bw 的内存，rgb与hsv已做内部处理
+ */
 #ifndef CAMERA_AUDIO_ESP32_H
 #define CAMERA_AUDIO_ESP32_H
 
@@ -44,6 +56,30 @@ typedef struct {
 } RGBImage;
 
 /**
+ * 黑白图像结构体
+ */
+typedef struct {
+    unsigned char *data;     /* 黑白数据 */
+    int width;               /* 图像宽度 */
+    int height;              /* 图像高度 */
+    int channels;            /* 通道数 (固定为1) */
+} BWImage;
+
+/**
+ * HSV图像结构体
+ * H: 0~179 (色相 0~360° 除以2，与 OpenCV COLOR_BGR2HSV 一致)
+ * S: 0~255
+ * V: 0~255
+ */
+typedef struct {
+    unsigned char *data;     /* HSV数据 (H,S,V连续存储) */
+    int width;               /* 图像宽度 */
+    int height;              /* 图像高度 */
+    int channels;            /* 通道数 (固定为3) */
+    size_t total_size;       /* 总字节数 */
+} HSVImage;
+
+/**
  * 摄像头配置
  * 注意：这些参数需要根据你的摄像头实际描述符填写
  */
@@ -64,6 +100,7 @@ typedef struct {
     uint8_t channels;        /* 声道数, 1=单声道 */
 } AudioConfig;
 
+#define CONNECT_RETRY   50    /* 等待摄像头连接的次数（每次 100ms，共约 5s） */
 /* ==================== 核心功能函数 ==================== */
 
 /** 存储区挂载函数
@@ -71,6 +108,12 @@ typedef struct {
  * @param 无
  */
 void storage_load(void);
+
+/** 取图函数
+ * @param mask 获取黑白图的存储指针
+ * @return  false表示取图失败，mask中不是有效内容，true表示成功
+ */
+bool get_mask(BWImage* mask);
 
 /* ============ 摄像头功能函数 ============ */
 /**
@@ -139,6 +182,42 @@ int audio_record(const char *filename, int seconds);
  * @return          0=成功, 负数=错误码
  */
 int audio_play(const char *filename);
+
+/* ============ 图像处理函数 ============ */
+
+/**
+ * 解码MJPEG为RGB
+ */
+int decode_mjpeg_to_rgb(unsigned char *mjpeg_data, size_t mjpeg_size, RGBImage *rgb);
+
+/**
+ * 保存RGB为PPM图像 (可用于查看)
+ */
+int save_rgb_as_ppm(const char *filename, const RGBImage *rgb);
+
+/**
+ * RGB转HSV
+ * 说明：本函数与电脑端 OpenCV 对同一画面做 cv2.cvtColor(img, COLOR_BGR2HSV)
+ *      的结果一致（H 范围 0~179），电脑上调好的 lower/upper 阈值可直接搬来用。
+ * @param rgb  输入RGB图像
+ * @param hsv  输出HSV图像 (调用后需 free_hsv_image() 释放)
+ * @return     0=成功, 负数=错误码
+ */
+int rgb_to_hsv(const RGBImage *rgb, HSVImage *hsv);
+
+/**
+ * HSV阈值检测 (仿照 cv2.inRange(hsv, lower, upper))
+ * 对每个像素判断 lower <= hsv <= upper (逐通道)，生成二值掩码。
+ * 注意：色相 H 是按普通区间比较，不做跨 0 环绕；若目标色跨越 0/179（如红色），
+ *      需调两次再取并集（与 OpenCV 里两次 inRange + bitwise_or 同理）。
+ * @param hsv    输入HSV图像
+ * @param lower  下限 [H,S,V]
+ * @param upper  上限 [H,S,V]
+ * @param mask   输出二值掩码 (255=在范围内, 0=不在)，调用后需 free_bw_image() 释放
+ * @return       0=成功, 负数=错误码
+ */
+int hsv_in_range(const HSVImage *hsv, const uint8_t lower[3], const uint8_t upper[3], BWImage *mask);
+
 
 
 
@@ -243,14 +322,14 @@ int set_speaker_volume(int volume);
 int set_speaker_mute(bool mute);
 
 /**
- * 解码MJPEG为RGB
+ * 释放HSV图像内存
  */
-int decode_mjpeg_to_rgb(unsigned char *mjpeg_data, size_t mjpeg_size, RGBImage *rgb);
+void free_hsv_image(HSVImage *hsv);
 
 /**
- * 保存RGB为PPM图像 (可用于查看)
+ * 释放黑白图像内存
  */
-int save_rgb_as_ppm(const char *filename, const RGBImage *rgb);
+void free_bw_image(BWImage *bw);
 
 #ifdef __cplusplus
 }

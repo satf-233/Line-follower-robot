@@ -47,6 +47,9 @@ typedef struct {
     uint32_t subchunk2_size;   /* 音频数据大小 */
 } WAVHeader;
 
+/**
+ * 视频结构体
+ */
 typedef struct {
     bool initialized;
     bool stream_running;
@@ -123,6 +126,10 @@ static void camera_frame_cb(uvc_frame_t *frame, void *arg) {
 
     if (!frame || frame->data_bytes == 0) return;
 
+    /* 打印实际 MJPEG 帧大小，用于确认 frame_buffer_size 是否够用 */
+    
+    //ESP_LOGI(TAG, "帧大小: %u 字节", (unsigned)frame->data_bytes);
+
     /* 保存帧数据指针，供 cam_capture_frame 使用 */
     g_cam.last_frame_data = frame->data;
     g_cam.last_frame_size = frame->data_bytes;
@@ -138,11 +145,11 @@ static void camera_frame_cb(uvc_frame_t *frame, void *arg) {
  */
 static CameraConfig get_default_camera_config(void) {
     CameraConfig cfg = {
-        .width = 320,
-        .height = 240,
-        .fps = 15,
-        .xfer_buffer_size = 35 * 1024,   /* 35KB，需根据实际测试调整 */
-        .frame_buffer_size = 35 * 1024,
+        .width = 640,
+        .height = 480,
+        .fps = 15,                       /* 默认 3fps；640x480 支持 25/15fps，15fps 稳定 */
+        .xfer_buffer_size = 128 * 1024,  /* 传输缓冲：480p MJPEG 单帧约 20~40KB，128KB 足够 */
+        .frame_buffer_size = 256 * 1024, /* 帧缓冲，需容纳整帧 MJPEG，留余量 */
     };
     return cfg;
 }
@@ -644,15 +651,155 @@ int save_rgb_as_ppm(const char *filename, const RGBImage *rgb) {
 
 void rgb_to_grayscale(RGBImage *rgb) {
     if (!rgb || !rgb->data) return;
-    
+
     unsigned char *ptr = rgb->data;
     size_t count = rgb->width * rgb->height;
-    
+
     for (size_t i = 0; i < count; i++) {
         unsigned char gray = (unsigned char)(0.299 * ptr[0] + 0.587 * ptr[1] + 0.114 * ptr[2]);
         ptr[0] = ptr[1] = ptr[2] = gray;
         ptr += 3;
     }
+}
+
+/* RGB→HSV 单像素：R,G,B∈[0,255] → H∈[0,179], S∈[0,255], V∈[0,255]
+ * 结果与 OpenCV 的 cv2.cvtColor(img, COLOR_BGR2HSV) 一致。 */
+static void rgb_to_hsv_pixel(uint8_t r, uint8_t g, uint8_t b,
+                             uint8_t *h, uint8_t *s, uint8_t *v)
+{
+    int mx = r, mn = r;
+    if (g > mx) mx = g;
+    if (b > mx) mx = b;
+    if (g < mn) mn = g;
+    if (b < mn) mn = b;
+    int diff = mx - mn;
+
+    *v = (uint8_t)mx;
+
+    if (mx == 0) {
+        *s = 0;
+    } else {
+        *s = (uint8_t)((diff * 255) / mx);
+    }
+
+    if (diff == 0) {
+        *h = 0;
+    } else {
+        int hh;
+        if (mx == r) {
+            hh = (60 * (g - b)) / diff;      /* 可能为负 */
+            if (hh < 0) hh += 360;
+        } else if (mx == g) {
+            hh = 120 + (60 * (b - r)) / diff;
+        } else { /* mx == b */
+            hh = 240 + (60 * (r - g)) / diff;
+        }
+        *h = (uint8_t)(hh / 2);              /* 360° → 0~179，与 OpenCV 一致 */
+    }
+}
+
+int rgb_to_hsv(const RGBImage *rgb, HSVImage *hsv) {
+    if (!rgb || !rgb->data || !hsv) return CAM_ERR_PARAM;
+    if (rgb->channels != 3) return CAM_ERR_PARAM;
+    memset(hsv, 0, sizeof(HSVImage));
+
+    size_t count = (size_t)rgb->width * rgb->height;
+    hsv->total_size = count * 3;
+    hsv->data = (unsigned char *)malloc(hsv->total_size);
+    if (!hsv->data) return CAM_ERR_MEMORY;
+
+    hsv->width = rgb->width;
+    hsv->height = rgb->height;
+    hsv->channels = 3;
+
+    const uint8_t *in = rgb->data;
+    uint8_t *out = hsv->data;
+    for (size_t i = 0; i < count; i++) {
+        rgb_to_hsv_pixel(in[0], in[1], in[2], &out[0], &out[1], &out[2]);
+        in += 3;
+        out += 3;
+    }
+    return CAM_OK;
+}
+
+int hsv_in_range(const HSVImage *hsv, const uint8_t lower[3], const uint8_t upper[3], BWImage *mask) {
+    if (!hsv || !hsv->data || !lower || !upper || !mask) return CAM_ERR_PARAM;
+    if (hsv->channels != 3) return CAM_ERR_PARAM;
+    memset(mask, 0, sizeof(BWImage));
+
+    size_t count = (size_t)hsv->width * hsv->height;
+    mask->data = (unsigned char *)malloc(count);
+    if (!mask->data) return CAM_ERR_MEMORY;
+
+    mask->width = hsv->width;
+    mask->height = hsv->height;
+    mask->channels = 1;
+
+    const uint8_t *in = hsv->data;
+    uint8_t *out = mask->data;
+    for (size_t i = 0; i < count; i++) {
+        bool ok = (in[0] >= lower[0] && in[0] <= upper[0]) &&
+                  (in[1] >= lower[1] && in[1] <= upper[1]) &&
+                  (in[2] >= lower[2] && in[2] <= upper[2]);
+        *out = ok ? 255 : 0;
+        in += 3;
+        out += 1;
+    }
+    return CAM_OK;
+}
+
+void free_hsv_image(HSVImage *hsv) {
+    if (hsv && hsv->data) {
+        free(hsv->data);
+        hsv->data = NULL;
+        hsv->width = 0;
+        hsv->height = 0;
+        hsv->channels = 0;
+        hsv->total_size = 0;
+    }
+}
+
+void free_bw_image(BWImage *bw) {
+    if (bw && bw->data) {
+        free(bw->data);
+        bw->data = NULL;
+        bw->width = 0;
+        bw->height = 0;
+        bw->channels = 0;
+    }
+}
+
+bool get_mask(BWImage* mask)
+{
+    RGBImage rgb;
+    HSVImage hsv;
+    const uint8_t lower[3] = {0, 0, 0};  //h-s-v三值过滤下限
+     const uint8_t upper[3] = {255, 255, 255};//h-s-v三值过滤上限
+    int ret = CAM_ERR_TIMEOUT;
+
+    /* 摄像头刚启动需要一点时间连接，超时则重试 */
+    for (int t = 0; t < CONNECT_RETRY; t++) {
+        ret = cam_capture_rgb(&rgb, 100);
+        if (ret == CAM_OK) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_LOGE(TAG, "等待相机");
+    }
+    
+    if (ret != CAM_OK) {
+            ESP_LOGE(TAG, "抓帧失败: %d",ret);
+            return false;
+        }
+    
+    rgb_to_hsv(&rgb, &hsv);
+    ret = hsv_in_range(&hsv, lower, upper, mask);
+
+    if(ret != CAM_OK)
+    {
+        ESP_LOGE(TAG, "滤图失败: %d",ret);
+        return false;
+    }
+
+    return true;
 }
 
 /* ==================== 清理函数 ==================== */

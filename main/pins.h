@@ -18,10 +18,10 @@
 #define BOOT_GPIO       GPIO_NUM_0   // BOOT 按键（按下接 GND，低电平）
 
 // ===== 电机驱动（TB6612）=====
-#define PWMA  GPIO_NUM_18
+#define PWMA  GPIO_NUM_6
 #define AIN1  GPIO_NUM_15
 #define AIN2  GPIO_NUM_7
-#define PWMB  GPIO_NUM_17
+#define PWMB  GPIO_NUM_18
 #define BIN1  GPIO_NUM_3
 #define BIN2  GPIO_NUM_8
 #define PWMD  GPIO_NUM_14
@@ -46,9 +46,10 @@
 #define SERVO2_GPIO     GPIO_NUM_45
 
 // ===== 液晶屏（ST7735S，SPI 串口 7Pin）=====
-#define LCD_DC  GPIO_NUM_37
-#define LCD_SDI GPIO_NUM_36
-#define LCD_SCK GPIO_NUM_35
+#define LCD_RST GPIO_NUM_43
+#define LCD_DC  GPIO_NUM_44
+#define LCD_SDI GPIO_NUM_40
+#define LCD_SCK GPIO_NUM_39
 
 // ===== 超声波测距传感器（HC-SR04）=====
 #define TRIG GPIO_NUM_5
