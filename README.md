@@ -2,6 +2,9 @@
 
 基于 ESP-IDF 的 ESP32-S3 循迹小车项目。
 
+> [!WARNING]
+> 此分支已停止开发！
+
 ## TODO
 
 - [x] WS2812 灯珠点亮示例（GPIO 38，RMT 驱动）
