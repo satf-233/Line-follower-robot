@@ -95,10 +95,10 @@ float avoid_measure_cm(void)
        顺时针旋转则减小Speed_B，逆时针旋转则增大Speed_B。
     (3)迭代直到小车完全不发生旋转时，调节A和D的速度，消去前后平移分量。
     (4)初始时给一个瞬间的大速度，让车轮先转起来，规避静摩擦力。*/
-#define speed_A 0.116f
-#define speed_B 0.207f
-#define speed_D 0.116f
-#define fire_para 1.85f
+#define speed_A 0.093f * 1.05f//0.095
+#define speed_B 0.173f
+#define speed_D 0.093f //0.095
+#define fire_para 1.95f
 #define fire_time 100
 
 //向左和向右平移函数
@@ -143,13 +143,13 @@ void Move_Fire(int type){
     }
 }
 
-void nonline_forward(){
-    float forspeed_A = 0.177;
-    float forspeed_D = 0.16;
-    motorD_CCW(forspeed_D);
-    motorA_CW(forspeed_A);
-    motorB_stop();
-}
+//void nonline_forward(){
+    //float forspeed_A = 0.177;
+    //float forspeed_D = 0.16;
+    //motorD_CCW(forspeed_D);
+    //motorA_CW(forspeed_A);
+    //motorB_stop();
+//}
 
 //每次停止后，延迟1000ms使电机完全停下俩
 #define STOP_DELAY 1000
@@ -159,7 +159,7 @@ bool avoid_run(){
 
     int findway_thre = 40; //检测到无障碍物的距离阈值(改)
     int pass_turn_time = 50; //绕行状态的每轮时间
-    int findway_turn_time = 1; //找回状态中，红外传感的检测间隔
+    int findway_turn_time = 10; //找回状态中，红外传感的检测间隔
     //初始为绕行状态
     int avoid_state = 1;
     //向左平移起步点火  
@@ -181,7 +181,7 @@ bool avoid_run(){
 
                 //先保持平移运动300ms，保持距离显示刷新率不变
                 int move_count = 0;
-                while (move_count < 3) {
+                while (move_count < 1) {
                     vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
                     lcd_show_dist (avoid_measure_cm());
                     lcd_show_speed();
@@ -197,11 +197,12 @@ bool avoid_run(){
 
         //找回状态，该状态不会连续两次进入
         else if (avoid_state == 2){
-            //沿用上面的思路走12个循环，一次100ms
+            //沿用上面的思路走循环，一次100ms
             int forward_time = 100;
             int forward_count = 0;
-            while (forward_count < 12){
-                nonline_forward();
+            motor_stop();
+            while (forward_count < 5){
+                motor_forward(0.17);
                 lcd_show_dist(avoid_measure_cm());
                 lcd_show_speed();
                 vTaskDelay(pdMS_TO_TICKS(forward_time));
@@ -216,32 +217,34 @@ bool avoid_run(){
             lcd_show_dist(avoid_measure_cm());
             lcd_show_speed();
             int sense_count = 0;
-            
+            Move(RIGHT_MOVE);
+            int IR[4];
             while(1){
-                Move(RIGHT_MOVE);
+                
 
                 //每100ms刷新一次距离数据
-                if (sense_count > 100) {
-                    sense_count = 0;
-                    lcd_show_dist(avoid_measure_cm()); 
-                    lcd_show_speed();
-                }
+                //if (sense_count > 10) {
+                //    sense_count = 0;
+                //    lcd_show_dist(avoid_measure_cm()); 
+                //    lcd_show_speed();
+                //}
 
                 //读取红外传感器电平
-                int IR[4];
-                IR[0] = gpio_get_level(IR1);
-                IR[1] = gpio_get_level(IR2);
-                IR[2] = gpio_get_level(IR3);
-                IR[3] = gpio_get_level(IR4);
+                
+                //IR[0] = gpio_get_level(IR1);
+                //IR[1] = gpio_get_level(IR2);
+                //IR[2] = gpio_get_level(IR3);
+                //IR[3] = gpio_get_level(IR4);
 
                 //如果传感器接受到黑色信息，就返回1（算法待优化）
-                if (IR[1] == 0 || IR[2] == 0 || IR[3] == 0 || IR[4] == 0){
+                vTaskDelay(pdMS_TO_TICKS(findway_turn_time));
+                if (!(gpio_get_level(IR1)&gpio_get_level(IR2)&gpio_get_level(IR3)&gpio_get_level(IR4))){
                     motor_stop();
                     vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
                     return true;
                 }
-                sense_count++;
-                vTaskDelay(pdMS_TO_TICKS(findway_turn_time));
+                //sense_count++;
+                
             } 
         }
     }

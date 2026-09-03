@@ -30,13 +30,13 @@ void motorA_CCW(float duty)
 {
     gpio_set_level(AIN1, 1);
     gpio_set_level(AIN2, 0);
-    pwm_set_duty(PWMA, duty);
+    pwm_set_duty(PWMA, duty * 1.1);
 }
 void motorA_CW(float duty)
 {
     gpio_set_level(AIN1, 0);
     gpio_set_level(AIN2, 1);
-    pwm_set_duty(PWMA, duty);
+    pwm_set_duty(PWMA, duty * 1.1);
 }
 
 void motorB_CCW(float duty)

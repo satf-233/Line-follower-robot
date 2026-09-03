@@ -484,10 +484,13 @@ void lcd_show_dist(float dist)
 // 显示三台电机(A/B/D)的累计脉冲数，各显示三位整数(0~999)，自上而下分布在 Dist 下方
 void lcd_show_speed()
 {
+    // int32_t a = encoder_get_pulses(MOTOR_A);
+    // int32_t b = encoder_get_pulses(MOTOR_B);
+    // int32_t d = encoder_get_pulses(MOTOR_D);
     float a = encoder_get_rpm(MOTOR_A);
     float b = encoder_get_rpm(MOTOR_B);
     float d = encoder_get_rpm(MOTOR_D);
-    const float vals[3] = { a, b, d };
+    const int32_t vals[3] = { a, b, d };
     const uint16_t ys[3]  = { LCD_TEXT_Y_A, LCD_TEXT_Y_B, LCD_TEXT_Y_D };
     char buf[7];
 
@@ -513,10 +516,10 @@ void lcd_show_speed()
 
         if (v < 0) {
             buf[2] = '-';
+            v = -v;
         }
         else {
             buf[2] = ' ';
-            v = -v;
         }
 
         buf[3] = (char)('0' + v / 100);

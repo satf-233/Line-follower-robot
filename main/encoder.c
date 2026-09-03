@@ -21,7 +21,7 @@
 
 // 输出轴每转一圈，A 相产生的边沿数。
 // 需按实际电机修改：霍尔盘每转脉冲数 × 减速比 × 2（双边沿计数）。
-#define ENCODER_PPR          205    // 示例：霍尔盘 10 脉冲/转 × 减速比 1:1
+#define ENCODER_PPR          200    // 示例：霍尔盘 10 脉冲/转 × 减速比 1:1
 #define ENCODER_UPDATE_MS    100   // 转速更新周期（ms），RPM 每 100ms 刷新一次
 
 typedef struct {

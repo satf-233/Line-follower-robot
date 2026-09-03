@@ -74,9 +74,10 @@ void start(void)
 
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
 
-    double speed = 0.16;
+    // 仅作用于进入 while 前的一瞬间，第一个 follow() 调用会立刻覆盖，
+    // 真正控制车速的是 follow_brain.c 里 follow()/follow_to_stop() 的 base_speed，改这里无效。
+    float speed = 0.14;
     motor_forward(speed);
-    int count = 0;
     int state = 1;
     while (1)
     {
@@ -86,25 +87,21 @@ void start(void)
             follow(led_strip); 
             
             //进入距离阈值
-            int Dis_thre = 10;
-            //每100ms判断一次前方是否有障碍物和显示距离
-            if (count > 100) {
-                count = 0;
-                float dis = avoid_measure_cm();
-                lcd_show_dist(dis);
-                lcd_show_speed();
-                if (dis < Dis_thre && dis > 0){
-                    motor_stop();
-                    vTaskDelay(pdMS_TO_TICKS(1000));
-                    state = 2;
-                }
+            int Dis_thre = 15;
+            //每50ms判断一次前方是否有障碍物和显示距离
+            float dis = avoid_measure_cm();
+            lcd_show_dist(dis);
+            lcd_show_speed();
+            if (dis < Dis_thre && dis > 0){
+                motor_stop();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                state = 2;
             }
-            count++;
         }
+    
 
         //避障状态，不会连续两次进入该状态
         else if(state == 2){
-            count = 0;
 
             //避障完成后进入循迹-停止状态
             if (avoid_run() == true){
@@ -118,18 +115,22 @@ void start(void)
 
         //循迹-停止状态，加入4黑停止逻辑
         else if (state == 3) {
+            static int force_stop_count = 0;
             //循迹，当出现4黑时直接跳出循环
             if(follow_to_stop(led_strip) == 1){
                 break;
             }
+            //每50ms刷新显示距离   
+            lcd_show_dist(avoid_measure_cm());
+            lcd_show_speed();
+            force_stop_count++;
 
-            //每100ms刷新显示距离
-            if (count > 100) {
-                count = 0;
-                lcd_show_dist(avoid_measure_cm());
-                lcd_show_speed();
-            }
-            count++;
+            // 强制停止
+            // if (force_stop_count == 700)
+            // {
+            //     break;
+            // }
+            
         }
 
         //未知状态，跳出循环并停止
