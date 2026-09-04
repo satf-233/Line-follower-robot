@@ -15,7 +15,7 @@ void lcd_init(void);
 void lcd_show_dist(float dist);
 
 // 显示三台电机(A/B/D)的累计脉冲数，各两位整数，自上而下分布在 Dist 下方
-void lcd_show_count();
+//void lcd_show_speed();
 
 #ifdef __cplusplus
 }

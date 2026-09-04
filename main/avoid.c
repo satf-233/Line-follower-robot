@@ -153,90 +153,72 @@ void nonline_forward(){
 
 //每次停止后，延迟1000ms使电机完全停下俩
 #define STOP_DELAY 1000
+//#define findway_thre 25 //检测到无障碍物的距离阈值(改)
+#define pass_turn_time 50 //绕行状态的每轮时间
+#define forward_time 100  //直行时间
+#define findway_turn_time 1 //找回状态中，红外传感的检测间隔
+
+
 
 //避障运动主程序
 bool avoid_run(){
 
-    int findway_thre = 40; //检测到无障碍物的距离阈值(改)
-    int pass_turn_time = 50; //绕行状态的每轮时间
-    int findway_turn_time = 1; //找回状态中，红外传感的检测间隔
     //初始为绕行状态
     int avoid_state = 1;
+
     //向左平移起步点火  
-    Move_Fire(1);
+    Move_Fire(LEFT_MOVE);
+    Move(LEFT_MOVE);
     lcd_show_dist(avoid_measure_cm());
-    while(1){
-        
+    float dist = 0;
+    while(avoid_state == 1)
+    {
         //绕行状态，每轮时间约为100ms
-        if (avoid_state == 1){
-            //向左平移避障
-            Move(LEFT_MOVE);
-
-            //若超声波检测得到前方没有障碍，则进入找回状态
-            float dist = avoid_measure_cm();//用时1ms
-            lcd_show_dist (dist);
-            if (dist > findway_thre || dist < 0) {
-
-                //先保持平移运动500ms，保持距离显示刷新率不变
-                int move_count = 0;
-                while (move_count < 3) {
-                    vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
-                    lcd_show_dist (avoid_measure_cm());
-                    move_count++;
-                }
-                move_count = 0;
-                motor_stop();
-                vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
-                avoid_state = 2; 
-            }
+        //若超声波检测得到前方没有障碍，则进入找回状态
+        vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
+        dist = avoid_measure_cm();//用时1ms
+        lcd_show_dist (dist);
+        if (dist < 0) 
+        {
+            //先保持平移运动500ms，保持距离显示刷新率不变
+            avoid_state = 2;
             vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
-        }
+            lcd_show_dist (avoid_measure_cm());
+            //motor_stop();
+            //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
+        }  
+    }
+    //直行段
+    //大概率要先点火，然后保持，沿用上面的思路走5个循环，一次100ms
+    int forward_count = 0;
+    nonline_forward();
+    while (forward_count < 15)
+    {
+        lcd_show_dist(avoid_measure_cm());
+        vTaskDelay(pdMS_TO_TICKS(forward_time));
+        forward_count++;
+    }
+    //motor_stop();
+    //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
 
-        //找回状态，该状态不会连续两次进入
-        else if (avoid_state == 2){
-            //大概率要先点火，然后保持，沿用上面的思路走5个循环，一次100ms
-            int forward_time = 100;
-            int forward_count = 0;
-            while (forward_count < 12){
-                nonline_forward();
-                lcd_show_dist(avoid_measure_cm());
-                vTaskDelay(pdMS_TO_TICKS(forward_time));
-                forward_count++;
-            }
-            motor_stop();
-            vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
-            forward_count = 0;
-
-            //再向右平移
-            Move_Fire(RIGHT_MOVE); //100ms
-            lcd_show_dist(avoid_measure_cm());
-            int sense_count = 0;
-            
-            while(1){
-                Move(RIGHT_MOVE);
-
-                //每100ms刷新一次距离数据
-                if (sense_count > 100) {
-                    sense_count = 0;
-                    lcd_show_dist(avoid_measure_cm()); 
-                }
-
-                //读取红外传感器电平
-                int IR[4];
-                IR[0] = gpio_get_level(IR1);
-                IR[1] = gpio_get_level(IR2);
-                IR[2] = gpio_get_level(IR3);
-                IR[3] = gpio_get_level(IR4);
-
-                //如果传感器接受到黑色信息，就返回1（算法待优化）
-                if (IR[1] == 0 || IR[2] == 0 || IR[3] == 0 || IR[4] == 0){
-                    motor_stop();
-                    vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
-                    return true;
-                }
-                sense_count++;
-                vTaskDelay(pdMS_TO_TICKS(findway_turn_time));
-            } 
+    //再向右平移
+    Move_Fire(RIGHT_MOVE); //100ms
+    lcd_show_dist(avoid_measure_cm());
+    int sense_count = 0;
+    Move(RIGHT_MOVE);
+    while(1){
+        vTaskDelay(pdMS_TO_TICKS(findway_turn_time));
+        //每100ms刷新一次距离数据
+        if (sense_count > 100) {
+            sense_count = 0;
+            lcd_show_dist(avoid_measure_cm()); 
+        }sense_count++;
+        //读取红外传感器电平
+        //如果传感器接受到黑色信息，就返回1（算法待优化）
+        if (!(gpio_get_level(IR1)&gpio_get_level(IR2)&gpio_get_level(IR3)&gpio_get_level(IR4))){
+            //motor_stop();
+            //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
+            return true;
         }
     }
 }

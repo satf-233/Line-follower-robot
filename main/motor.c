@@ -14,14 +14,17 @@
 void motor_init(void)
 {
     // 把所有电机相关 GPIO 配置为输出
-    // TB6612 每路电机需要 3 个控制信号（PWM、IN1、IN2）
+    // TB6612 每路电机需要 3 个控制信号（PWM、IN1、IN2），A/B 两路共用 STBY 使能脚
     gpio_config_t io = {
-        .pin_bit_mask =  (1ULL << PWMA) | (1ULL << AIN1) | (1ULL << AIN2)
-                       | (1ULL << PWMB) | (1ULL << BIN1) | (1ULL << BIN2)
-                       | (1ULL << PWMD) | (1ULL << DIN1) | (1ULL << DIN2),
+        .pin_bit_mask = (1ULL << PWMA) | (1ULL << AIN1) | (1ULL << AIN2)
+                      | (1ULL << PWMB) | (1ULL << BIN1) | (1ULL << BIN2)
+                      | (1ULL << PWMD) | (1ULL << DIN1) | (1ULL << DIN2),
         .mode = GPIO_MODE_OUTPUT,
     };
     gpio_config(&io);
+
+    // 使能驱动板（STBY 不拉高，电机不动）
+    //gpio_set_level(STBY, 1);
 }
 
 // 电机单独控制
