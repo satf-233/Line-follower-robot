@@ -105,7 +105,7 @@ typedef struct {
     uint8_t channels;        /* 声道数, 1=单声道 */
 } AudioConfig;
 
-#define CONNECT_RETRY   50    /* 等待摄像头连接的次数（每次 100ms，共约 5s） */
+#define CONNECT_RETRY   20    /* 等待摄像头连接的次数（每次 100ms，共约 2s） */
 /* ==================== 核心功能函数 ==================== */
 
 /** 存储区挂载函数
@@ -142,12 +142,15 @@ int cam_start_stream(void);
 int cam_stop_stream(void);
 
 /**
- * 捕获一帧并解码为RGB
- * @param rgb         输出: RGB图像 (调用后需调用 free_rgb_image() 释放)
- * @param timeout_ms  超时时间(毫秒)
- * @return            0=成功, 负数=错误码
+ * 捕获一帧并解码为RGB，只截取指定行区间（所有列全保留），零拷贝
+ * @param rgb        输出: 行区间视图，data 指向 full->data 内部（勿 free rgb，应 free full）
+ * @param full       输出: 整帧解码结果，拥有底层缓冲，用完后必须 free_rgb_image(full) 释放
+ * @param row_start  起始行 (含)，负值按 0 处理
+ * @param row_end    结束行 (不含)，<=0 表示截到图像底边（0,0 = 整帧）
+ * @param timeout_ms 超时时间(毫秒)
+ * @return           0=成功, 负数=错误码
  */
-int cam_capture_rgb(RGBImage *rgb, uint32_t timeout_ms);
+int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, uint32_t timeout_ms);
 
 /**
  * RGB转灰度图 (原地修改)

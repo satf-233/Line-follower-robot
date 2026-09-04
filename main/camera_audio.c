@@ -10,6 +10,7 @@
 #include "camera_audio.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -17,6 +18,11 @@
 #include "usb_stream.h"
 #include "esp_vfs_fat.h"
 #include <dirent.h>
+
+/* esp_jpeg 解码/编码公共声明（jpeg_dec_*, jpeg_enc_*, jpeg_malloc_align 等）。
+ * 放在顶部，避免靠前位置使用这些符号时出现隐式声明。 */
+#include "esp_jpeg_dec.h"
+#include "esp_jpeg_enc.h"
 
 /* ==================== 日志标签 ==================== */
 static const char *TAG = "CAM_AUDIO";
@@ -66,12 +72,13 @@ typedef struct {
     
     /* 同步 */
     SemaphoreHandle_t frame_sem;
-    unsigned char *last_frame_data;
+    unsigned char *last_frame_data;    /* 最新帧数据指针（指向 frame_copy_buf 拷贝） */
     size_t last_frame_size;
+    unsigned char *frame_copy_buf;     /* 独立帧拷贝缓冲，避免解码时被 USB 组件覆盖 */
 } CameraContext;
 
 static CameraContext g_cam = {0};
-static bool g_audio_init = false;
+//static bool g_audio_init = false;
 static int  g_spk_volume = 100;   /* 播放时应用的扬声器音量，默认 100 */
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;   /* storage 分区 wear-leveling 句柄 */
 
@@ -130,8 +137,13 @@ static void camera_frame_cb(uvc_frame_t *frame, void *arg) {
     
     //ESP_LOGI(TAG, "帧大小: %u 字节", (unsigned)frame->data_bytes);
 
-    /* 保存帧数据指针，供 cam_capture_frame 使用 */
-    g_cam.last_frame_data = frame->data;
+    /* frame->data 指向 USB 组件的 frame_buffer，组件下一帧会立刻覆盖它，
+     * 必须马上拷贝到自己的缓冲，不能只存指针（否则解码时数据可能已被覆盖）。 */
+    if (!g_cam.frame_copy_buf || frame->data_bytes > g_cam.frame_buf_size) {
+        return;
+    }
+    memcpy(g_cam.frame_copy_buf, frame->data, frame->data_bytes);
+    g_cam.last_frame_data = g_cam.frame_copy_buf;
     g_cam.last_frame_size = frame->data_bytes;
 
     /* 通知有新的帧到达 */
@@ -145,11 +157,11 @@ static void camera_frame_cb(uvc_frame_t *frame, void *arg) {
  */
 static CameraConfig get_default_camera_config(void) {
     CameraConfig cfg = {
-        .width = 640,
-        .height = 480,
-        .fps = 15,                       /* 默认 3fps；640x480 支持 25/15fps，15fps 稳定 */
-        .xfer_buffer_size = 128 * 1024,  /* 传输缓冲：480p MJPEG 单帧约 20~40KB，128KB 足够 */
-        .frame_buffer_size = 256 * 1024, /* 帧缓冲，需容纳整帧 MJPEG，留余量 */
+        .width = 480,
+        .height = 320,
+        .fps = 15,                       /* 摄像头支持 480x320 @ 15/25fps（不支持 320x240） */
+        .xfer_buffer_size = 64 * 1024,  /* 传输缓冲：实测一帧 MJPEG 约 34KB，32KB 会溢出丢帧 */
+        .frame_buffer_size = 96 * 1024, /* 帧缓冲，需容纳整帧 MJPEG，留余量 */
     };
     return cfg;
 }
@@ -190,8 +202,9 @@ int cam_init(const CameraConfig *config) {
     g_cam.xfer_buffer_a = heap_caps_malloc(g_cam.xfer_buf_size, MALLOC_CAP_DEFAULT);
     g_cam.xfer_buffer_b = heap_caps_malloc(g_cam.xfer_buf_size, MALLOC_CAP_DEFAULT);
     g_cam.frame_buffer = heap_caps_malloc(g_cam.frame_buf_size, MALLOC_CAP_DEFAULT);
-    
-    if (!g_cam.xfer_buffer_a || !g_cam.xfer_buffer_b || !g_cam.frame_buffer) {
+    g_cam.frame_copy_buf = heap_caps_malloc(g_cam.frame_buf_size, MALLOC_CAP_DEFAULT);
+
+    if (!g_cam.xfer_buffer_a || !g_cam.xfer_buffer_b || !g_cam.frame_buffer || !g_cam.frame_copy_buf) {
         ESP_LOGE(TAG, "缓冲区分配失败");
         goto cleanup;
     }
@@ -237,12 +250,14 @@ int cam_init(const CameraConfig *config) {
     g_cam.stream_running = false;
     
     ESP_LOGI(TAG, "摄像头初始化成功: %dx%d @ %u fps", cfg.width, cfg.height, (unsigned)cfg.fps);
+
     return CAM_OK;
 
 cleanup:
     if (g_cam.xfer_buffer_a) { free(g_cam.xfer_buffer_a); g_cam.xfer_buffer_a = NULL; }
     if (g_cam.xfer_buffer_b) { free(g_cam.xfer_buffer_b); g_cam.xfer_buffer_b = NULL; }
     if (g_cam.frame_buffer) { free(g_cam.frame_buffer); g_cam.frame_buffer = NULL; }
+    if (g_cam.frame_copy_buf) { free(g_cam.frame_copy_buf); g_cam.frame_copy_buf = NULL; }
     if (g_cam.frame_sem) { vSemaphoreDelete(g_cam.frame_sem); g_cam.frame_sem = NULL; }
     return CAM_ERR_MEMORY;
 }
@@ -258,6 +273,15 @@ int cam_start_stream(void) {
     }
 
     g_cam.stream_running = true;
+
+    /* 流已启动、VS 描述符已解析，此时才能读到相机实际支持的帧间隔。
+     * 用于核对协商结果：若下方打印的"帧间隔"不是 666667(15fps) 而是大值，
+     * 说明协商回退到了慢默认档。 */
+    {
+        uint16_t res[8][2];
+        int cnt = 0;
+        cam_get_supported_resolutions(res, 8, &cnt);
+    }
     return CAM_OK;
 }
 
@@ -276,34 +300,85 @@ int cam_stop_stream(void) {
 
 int cam_capture_frame(unsigned char **data, size_t *size, uint32_t timeout_ms) {
     if (!g_cam.initialized || !g_cam.stream_running) {
+        ESP_LOGW(TAG, "抓帧-1: 流未就绪 (init=%d running=%d)",
+                 g_cam.initialized, g_cam.stream_running);
         return CAM_ERR;
     }
-    
+
     /* 等待新帧 */
     if (g_cam.frame_sem) {
         if (xSemaphoreTake(g_cam.frame_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
             return CAM_ERR_TIMEOUT;
         }
     }
-    
+
     if (g_cam.last_frame_data && g_cam.last_frame_size > 0) {
         *data = g_cam.last_frame_data;
         *size = g_cam.last_frame_size;
         return CAM_OK;
     }
-    
+
+    ESP_LOGW(TAG, "抓帧-1: 有信号量但无数据 (size=%u)", (unsigned)g_cam.last_frame_size);
     return CAM_ERR;
 }
-
-int cam_capture_rgb(RGBImage *rgb, uint32_t timeout_ms) {
+//ccx
+int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, uint32_t timeout_ms) {
     unsigned char *data = NULL;
     size_t size = 0;
-    
-    if (cam_capture_frame(&data, &size, timeout_ms) != CAM_OK) {
-        return CAM_ERR;
+    int ret;
+
+    if (!rgb || !full) return CAM_ERR_PARAM;
+    memset(rgb, 0, sizeof(*rgb));
+    memset(full, 0, sizeof(*full));
+
+    int64_t t_start = esp_timer_get_time();
+
+    ret = cam_capture_frame(&data, &size, timeout_ms);
+    if (ret != CAM_OK) {
+        return ret;   /* 透传真实错误码（超时/未初始化等），供上层区分 */
     }
-    
-    return decode_mjpeg_to_rgb(data, size, rgb);
+
+    int64_t t_cap = esp_timer_get_time();
+
+    /* 整帧解码到 full；full 拥有整块底层缓冲，用完后由调用方 free_rgb_image(full) 释放 */
+    ret = decode_mjpeg_to_rgb(data, size, full);
+    if (ret != CAM_OK) {
+        return ret;
+    }
+
+    int64_t t_decode = esp_timer_get_time();
+
+    /* 行区间约定：[row_start, row_end) 左闭右开，所有列全部保留。
+     * row_start 负值按 0 处理；row_end <= 0 表示一直截到图像底边（传 0,0 = 整帧）。 */
+    int y1 = row_start < 0 ? 0 : row_start;
+    int y2 = (row_end <= 0) ? full->height : row_end;
+    if (y1 > full->height) y1 = full->height;
+    if (y2 > full->height) y2 = full->height;
+    if (y2 <= y1) {
+        free_rgb_image(full);
+        return CAM_ERR_PARAM;
+    }
+
+    const size_t row_bytes = (size_t)full->width * 3;
+    const size_t nrows     = (size_t)(y2 - y1);
+    const size_t offset    = (size_t)y1 * row_bytes;
+
+    /* 零拷贝：rgb 是 full 的行区间“视图”，data 直接指向 full->data + offset，
+     * 不另分配、不拷贝。释放时只 free_rgb_image(full)，绝不能 free_rgb_image(rgb)。 */
+    rgb->data       = full->data + offset;
+    rgb->width      = full->width;
+    rgb->height     = (int)nrows;
+    rgb->channels   = 3;
+    rgb->total_size = nrows * row_bytes;
+
+    int64_t t_cut = esp_timer_get_time();
+    ESP_LOGI(TAG, "计时: 抓取=%lld ms, 解码=%lld ms, 裁剪=%lld ms, 合计=%lld ms",
+                     (long long)(t_cap - t_start) / 1000,
+                     (long long)(t_decode - t_cap) / 1000,
+                     (long long)(t_cut - t_decode) / 1000,
+                     (long long)(t_cut - t_start) / 1000);
+
+    return CAM_OK;
 }
 
 int cam_get_resolution(int *width, int *height) {
@@ -313,6 +388,7 @@ int cam_get_resolution(int *width, int *height) {
     return CAM_OK;
 }
 
+//ccx
 int cam_get_supported_resolutions(uint16_t list[][2], int max, int *count) {
     uvc_frame_size_t *frame_list = NULL;
     size_t list_size = 0;
@@ -344,7 +420,11 @@ int cam_get_supported_resolutions(uint16_t list[][2], int max, int *count) {
         list[cnt][0] = frame_list[i].width;
         list[cnt][1] = frame_list[i].height;
         cnt++;
-        ESP_LOGI(TAG, "支持分辨率: %d x %d", frame_list[i].width, frame_list[i].height);
+        ESP_LOGI(TAG, "支持分辨率: %d x %d, 帧间隔=%u (相机支持 %u~%u, 步进 %u)",
+                 frame_list[i].width, frame_list[i].height,
+                 (unsigned)frame_list[i].interval,
+                 (unsigned)frame_list[i].interval_min, (unsigned)frame_list[i].interval_max,
+                 (unsigned)frame_list[i].interval_step);
     }
     
     *count = cnt;
@@ -571,9 +651,13 @@ int decode_mjpeg_to_rgb(unsigned char *mjpeg, size_t size, RGBImage *rgb) {
 
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_RAW_TYPE_RGB888;
+    /* 摄像头原生输出上下颠倒(180°)，解码时直接旋转纠正。
+     * 需宽高均为 8 的倍数才生效(480x320 满足)，且 180° 不改变宽高，零额外拷贝。 */
+    config.rotate = JPEG_ROTATE_180D;
 
     jpeg_dec = jpeg_dec_open(&config);
     if (!jpeg_dec) {
+        ESP_LOGE(TAG, "解码-1: jpeg_dec_open 失败");
         return CAM_ERR;
     }
 
@@ -616,9 +700,18 @@ int decode_mjpeg_to_rgb(unsigned char *mjpeg, size_t size, RGBImage *rgb) {
     ret = CAM_OK;
 
 cleanup:
-    if (ret != CAM_OK && rgb->data) {
-        jpeg_free_align(rgb->data);
-        rgb->data = NULL;
+    if (ret != CAM_OK) {
+        /* 区分「头解析失败」还是「数据处理失败」，并检查 JPEG 魔数是否完好 */
+        const unsigned char *p = mjpeg;
+        ESP_LOGE(TAG, "解码-1: ret=%d size=%u 魔数=%02X %02X %02X %02X 解析得 %ux%u",
+                 ret, (unsigned)size,
+                 p[0], p[1], p[2], p[3],
+                 out_info ? (unsigned)out_info->width : 0,
+                 out_info ? (unsigned)out_info->height : 0);
+        if (rgb->data) {
+            jpeg_free_align(rgb->data);
+            rgb->data = NULL;
+        }
     }
     if (out_info) free(out_info);
     if (jpeg_io) free(jpeg_io);
@@ -741,7 +834,7 @@ int bw_to_rgb(const BWImage *bw, RGBImage *rgb)
     const unsigned char *in  = bw->data;
     unsigned char *out = rgb->data;
     for (size_t i = 0; i < n; i++) {
-        unsigned char v = (in[i] < 128) ? 255 : 0;   // 黑线(0)->白，场地(255)->黑
+        unsigned char v = (in[i] < 128) ? 0 : 255;   // 黑线(0)->白，场地(255)->黑
         out[0] = out[1] = out[2] = v;
         out += 3;
     }
@@ -1076,37 +1169,38 @@ int mask_remove_small_blobs(const BWImage *src, BWImage *dst, int min_pixels)
 
 static bool filter_dot_and_blobs(BWImage* mask)
 {
-    int ret;
-    ret = mask_erode(mask, mask);
-    if(ret != CAM_OK)
-    {
-        ESP_LOGE(TAG, "第一次腐蚀失败: %d",ret);
-        return false;
-    }
-    ret = mask_dilate(mask, mask);
-    if(ret != CAM_OK)
-    {
-        ESP_LOGE(TAG, "第一次膨胀失败: %d",ret);
-        return false;
-    }
-    ret = mask_dilate(mask, mask);
-     if(ret != CAM_OK)
-    {
-        ESP_LOGE(TAG, "第二次膨胀失败: %d",ret);
-        return false;
-    }
-    ret = mask_erode(mask, mask);
-     if(ret != CAM_OK)
-    {
-        ESP_LOGE(TAG, "第二次腐蚀失败: %d",ret);
-        return false;
-    }
-    ret = mask_remove_small_blobs(mask, mask, MIN_PIXELS);  //MIN_PIXELS待调整
-    if(ret != CAM_OK)
-    {
-        ESP_LOGE(TAG, "连通域滤噪失败: %d",ret);
-        return false;
-    }
+    // int ret;
+    // ret = mask_erode(mask, mask);
+    // if(ret != CAM_OK)
+    // {
+    //     ESP_LOGE(TAG, "第一次腐蚀失败: %d",ret);
+    //     return false;
+    // }
+    // ret = mask_dilate(mask, mask);
+    // if(ret != CAM_OK)
+    // {
+    //     ESP_LOGE(TAG, "第一次膨胀失败: %d",ret);
+    //     return false;
+    // }
+    // ret = mask_dilate(mask, mask);
+    //  if(ret != CAM_OK)
+    // {
+    //     ESP_LOGE(TAG, "第二次膨胀失败: %d",ret);
+    //     return false;
+    // }
+    // ret = mask_erode(mask, mask);
+    //  if(ret != CAM_OK)
+    // {
+    //     ESP_LOGE(TAG, "第二次腐蚀失败: %d",ret);
+    //     return false;
+    // }
+    // ret = mask_remove_small_blobs(mask, mask, MIN_PIXELS);  //MIN_PIXELS待调整
+    // if(ret != CAM_OK)
+    // {
+    //     ESP_LOGE(TAG, "连通域滤噪失败: %d",ret);
+    //     return false;
+    // }
+
     return true;
 
 }
@@ -1115,57 +1209,52 @@ static bool filter_dot_and_blobs(BWImage* mask)
 bool get_mask(BWImage* mask, int mode)
 {//MIN_PIXELS待调整
     RGBImage rgb = {0};
+    RGBImage full = {0};
     HSVImage hsv = {0};
     bool filter_done = false;
     int ret = CAM_ERR_TIMEOUT;
 
+
     /* 摄像头刚启动需要一点时间连接，超时则重试 */
     for (int t = 0; t < CONNECT_RETRY; t++) {
-        ret = cam_capture_rgb(&rgb, 100);
+        /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
+        ret = cam_capture_rgb(&rgb, &full, 143, 0, 100);//从143开始截取到最底部，100ms内要求取到一帧原始帧
         if (ret == CAM_OK) break;
         vTaskDelay(pdMS_TO_TICKS(100));
-        ESP_LOGE(TAG, "等待相机");
+        ESP_LOGE(TAG, "等待相机，%d", ret);
     }
     
     if (ret != CAM_OK) {
             ESP_LOGE(TAG, "抓帧失败: %d",ret);
-            free_rgb_image(&rgb);
-            free_hsv_image(&hsv);
             return false;
         }
+    int64_t t_cap = esp_timer_get_time();
     
     if (mode == REDBALL_MODE)
     {
-        const uint8_t red_rgb_lower[3] = {40, 53, 144};        //r,g,b三值下值
-        const uint8_t red_rgb_upper[3] = {129, 102, 255};    //r,g,b三值上值
+        const uint8_t red_rgb_lower[3] = {144, 53, 40};        //r,g,b三值下值（滑块是BGR，这里已对调成RGB）
+        const uint8_t red_rgb_upper[3] = {255, 102, 129};    //r,g,b三值上值（滑块是BGR，这里已对调成RGB）
+
+        //const uint8_t red_rgb_lower[3] = {40, 53, 144};        //r,g,b三值下值（滑块是BGR，这里未对调成RGB）
+        //const uint8_t red_rgb_upper[3] = {129, 102, 255};    //r,g,b三值上值（滑块是BGR，这里未对调成RGB）
         ret = rgb_in_range(&rgb, red_rgb_lower, red_rgb_upper, mask);
         if(ret != CAM_OK)
         {
-            free_rgb_image(&rgb);
-            free_hsv_image(&hsv);
-            ESP_LOGE(TAG, "rgb阈值过滤失败: %d",ret);
+            free_rgb_image(&full);
+            ESP_LOGE(TAG, "红球rgb阈值过滤失败: %d",ret);
             return false;
         }
         filter_done = filter_dot_and_blobs(mask);
     }
     else if(mode == BLUEBALL_MODE)
     {
-        ret = rgb_to_hsv(&rgb, &hsv);
+        const uint8_t blu_rgb_lower[3] = {52, 65, 135};        //r,g,b三值下值（滑块是BGR，这里已对调成RGB）
+        const uint8_t blu_rgb_upper[3] = {113, 136, 237};    //r,g,b三值上值（滑块是BGR，这里已对调成RGB）
+        ret = rgb_in_range(&rgb, blu_rgb_lower, blu_rgb_upper, mask);
         if(ret != CAM_OK)
         {
-            free_rgb_image(&rgb);
-            free_hsv_image(&hsv);
-            ESP_LOGE(TAG, "rgb转hsv失败: %d",ret);
-            return false;
-        }
-        const uint8_t whi_hsv_lower[3] = {135, 65, 52};        //h,s,v三值下值
-        const uint8_t whi_hsv_upper[3] = {237, 136, 113};    //h,s,v三值上值
-        ret = hsv_in_range(&hsv, whi_hsv_lower, whi_hsv_upper, mask);
-        if(ret != CAM_OK)
-        {
-            free_rgb_image(&rgb);
-            free_hsv_image(&hsv);
-            ESP_LOGE(TAG, "hsv阈值过滤失败: %d",ret);
+            free_rgb_image(&full);
+            ESP_LOGE(TAG, "蓝球rgb阈值过滤失败: %d",ret);
             return false;
         }
         filter_done = filter_dot_and_blobs(mask);
@@ -1175,7 +1264,7 @@ bool get_mask(BWImage* mask, int mode)
         ret = rgb_to_hsv(&rgb, &hsv);
         if(ret != CAM_OK)
         {
-            free_rgb_image(&rgb);
+            free_rgb_image(&full);
             free_hsv_image(&hsv);
             ESP_LOGE(TAG, "rgb转hsv失败: %d",ret);
             return false;
@@ -1185,14 +1274,17 @@ bool get_mask(BWImage* mask, int mode)
         ret = hsv_in_range(&hsv, lin_hsv_lower, lin_hsv_upper, mask);
         if(ret != CAM_OK)
         {
-            free_rgb_image(&rgb);
+            free_rgb_image(&full);
             free_hsv_image(&hsv);
             ESP_LOGE(TAG, "hsv阈值过滤失败: %d",ret);
             return false;
         }
         filter_done = filter_dot_and_blobs(mask);
     }
-    free_rgb_image(&rgb);
+    int64_t t_end = esp_timer_get_time();
+    ESP_LOGI(TAG, "滤波=%lld ms",
+             (long long)(t_end - t_cap) / 1000 );
+    free_rgb_image(&full);
     free_hsv_image(&hsv);
     return filter_done;
 }
@@ -1207,6 +1299,7 @@ void cam_cleanup(void) {
     if (g_cam.xfer_buffer_a) { free(g_cam.xfer_buffer_a); g_cam.xfer_buffer_a = NULL; }
     if (g_cam.xfer_buffer_b) { free(g_cam.xfer_buffer_b); g_cam.xfer_buffer_b = NULL; }
     if (g_cam.frame_buffer) { free(g_cam.frame_buffer); g_cam.frame_buffer = NULL; }
+    if (g_cam.frame_copy_buf) { free(g_cam.frame_copy_buf); g_cam.frame_copy_buf = NULL; }
     if (g_cam.frame_sem) { vSemaphoreDelete(g_cam.frame_sem); g_cam.frame_sem = NULL; }
 
     g_cam.initialized = false;
