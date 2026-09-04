@@ -53,6 +53,12 @@ typedef struct {
     uint32_t subchunk2_size;   /* 音频数据大小 */
 } WAVHeader;
 
+/* 帧环形缓冲数量：
+ * 安全条件 = 解码时间 + 取帧延迟(最长一个帧间隔) < N × 帧间隔。
+ * 解码 ~85ms，帧间隔 66.7ms，最坏取帧延迟 66.7ms，合计需 ~152ms。
+ * N=2 只有 133ms 不够（周期性覆盖），N=3 有 200ms 刚好够，取 4 留余量。 */
+#define FRAME_BUF_COUNT 4
+
 /**
  * 视频结构体
  */
@@ -72,9 +78,10 @@ typedef struct {
     
     /* 同步 */
     SemaphoreHandle_t frame_sem;
-    unsigned char *last_frame_data;    /* 最新帧数据指针（指向 frame_copy_buf 拷贝） */
+    unsigned char *last_frame_data;    /* 最新帧数据指针（指向某个环形缓冲） */
     size_t last_frame_size;
-    unsigned char *frame_copy_buf;     /* 独立帧拷贝缓冲，避免解码时被 USB 组件覆盖 */
+    unsigned char *frame_copy_buf[FRAME_BUF_COUNT];  /* 帧环形缓冲：回调轮转写入，避免解码中被覆盖 */
+    volatile int  frame_copy_idx;      /* 下一个应写入的缓冲下标，回调内自增取模 */
 } CameraContext;
 
 static CameraContext g_cam = {0};
@@ -139,12 +146,20 @@ static void camera_frame_cb(uvc_frame_t *frame, void *arg) {
 
     /* frame->data 指向 USB 组件的 frame_buffer，组件下一帧会立刻覆盖它，
      * 必须马上拷贝到自己的缓冲，不能只存指针（否则解码时数据可能已被覆盖）。 */
-    if (!g_cam.frame_copy_buf || frame->data_bytes > g_cam.frame_buf_size) {
+    if (frame->data_bytes > g_cam.frame_buf_size) {
         return;
     }
-    memcpy(g_cam.frame_copy_buf, frame->data, frame->data_bytes);
-    g_cam.last_frame_data = g_cam.frame_copy_buf;
+
+    /* 帧环形缓冲：轮转写入。解码约 85ms + 取帧延迟(最长 66.7ms) 需约 152ms，
+     * 覆盖周期需大于该值；2 缓冲(133ms)不够会周期性覆盖，4 缓冲(266ms)安全。 */
+    unsigned char *dst = g_cam.frame_copy_buf[g_cam.frame_copy_idx];
+    if (!dst) {
+        return;
+    }
+    memcpy(dst, frame->data, frame->data_bytes);
+    g_cam.last_frame_data = dst;
     g_cam.last_frame_size = frame->data_bytes;
+    g_cam.frame_copy_idx = (g_cam.frame_copy_idx + 1) % FRAME_BUF_COUNT;
 
     /* 通知有新的帧到达 */
     if (g_cam.frame_sem) {
@@ -202,9 +217,16 @@ int cam_init(const CameraConfig *config) {
     g_cam.xfer_buffer_a = heap_caps_malloc(g_cam.xfer_buf_size, MALLOC_CAP_DEFAULT);
     g_cam.xfer_buffer_b = heap_caps_malloc(g_cam.xfer_buf_size, MALLOC_CAP_DEFAULT);
     g_cam.frame_buffer = heap_caps_malloc(g_cam.frame_buf_size, MALLOC_CAP_DEFAULT);
-    g_cam.frame_copy_buf = heap_caps_malloc(g_cam.frame_buf_size, MALLOC_CAP_DEFAULT);
+    for (int i = 0; i < FRAME_BUF_COUNT; i++) {
+        g_cam.frame_copy_buf[i] = heap_caps_malloc(g_cam.frame_buf_size, MALLOC_CAP_DEFAULT);
+        if (!g_cam.frame_copy_buf[i]) {
+            ESP_LOGE(TAG, "帧环形缓冲 %d 分配失败", i);
+            goto cleanup;
+        }
+    }
+    g_cam.frame_copy_idx = 0;
 
-    if (!g_cam.xfer_buffer_a || !g_cam.xfer_buffer_b || !g_cam.frame_buffer || !g_cam.frame_copy_buf) {
+    if (!g_cam.xfer_buffer_a || !g_cam.xfer_buffer_b || !g_cam.frame_buffer) {
         ESP_LOGE(TAG, "缓冲区分配失败");
         goto cleanup;
     }
@@ -257,7 +279,9 @@ cleanup:
     if (g_cam.xfer_buffer_a) { free(g_cam.xfer_buffer_a); g_cam.xfer_buffer_a = NULL; }
     if (g_cam.xfer_buffer_b) { free(g_cam.xfer_buffer_b); g_cam.xfer_buffer_b = NULL; }
     if (g_cam.frame_buffer) { free(g_cam.frame_buffer); g_cam.frame_buffer = NULL; }
-    if (g_cam.frame_copy_buf) { free(g_cam.frame_copy_buf); g_cam.frame_copy_buf = NULL; }
+    for (int i = 0; i < FRAME_BUF_COUNT; i++) {
+        if (g_cam.frame_copy_buf[i]) { free(g_cam.frame_copy_buf[i]); g_cam.frame_copy_buf[i] = NULL; }
+    }
     if (g_cam.frame_sem) { vSemaphoreDelete(g_cam.frame_sem); g_cam.frame_sem = NULL; }
     return CAM_ERR_MEMORY;
 }
@@ -671,7 +695,7 @@ int decode_mjpeg_to_rgb(unsigned char *mjpeg, size_t size, RGBImage *rgb) {
     jpeg_io->inbuf = mjpeg;
     jpeg_io->inbuf_len = (int)size;
 
-    if (jpeg_dec_parse_header(jpeg_dec, jpeg_io, out_info) != JPEG_ERR_OK) {
+    if (jpeg_dec_parse_header(jpeg_dec, jpeg_io, out_info) != JPEG_ERR_OK) {////////////////////////
         goto cleanup;
     }
 
@@ -693,7 +717,7 @@ int decode_mjpeg_to_rgb(unsigned char *mjpeg, size_t size, RGBImage *rgb) {
     jpeg_io->inbuf_len = jpeg_io->inbuf_remain;
     jpeg_io->outbuf = rgb->data;
 
-    if (jpeg_dec_process(jpeg_dec, jpeg_io) != JPEG_ERR_OK) {
+    if (jpeg_dec_process(jpeg_dec, jpeg_io) != JPEG_ERR_OK) {//////////////////
         goto cleanup;
     }
 
@@ -1214,13 +1238,13 @@ bool get_mask(BWImage* mask, int mode)
     bool filter_done = false;
     int ret = CAM_ERR_TIMEOUT;
 
-
-    /* 摄像头刚启动需要一点时间连接，超时则重试 */
+    int64_t t_start = esp_timer_get_time(); 
+   /* 摄像头刚启动需要一点时间连接，超时则重试 */
     for (int t = 0; t < CONNECT_RETRY; t++) {
         /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
         ret = cam_capture_rgb(&rgb, &full, 143, 0, 100);//从143开始截取到最底部，100ms内要求取到一帧原始帧
         if (ret == CAM_OK) break;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(70));
         ESP_LOGE(TAG, "等待相机，%d", ret);
     }
     
@@ -1282,8 +1306,10 @@ bool get_mask(BWImage* mask, int mode)
         filter_done = filter_dot_and_blobs(mask);
     }
     int64_t t_end = esp_timer_get_time();
-    ESP_LOGI(TAG, "滤波=%lld ms",
-             (long long)(t_end - t_cap) / 1000 );
+    ESP_LOGI(TAG, "重复请求+抓取+解码+裁剪=%lld ms, 滤波=%lld ms, get_mask总费时=%lld ms",
+            (long long)(t_cap - t_start) / 1000, 
+            (long long)(t_end - t_cap) / 1000, 
+            (long long)(t_end - t_start) / 1000 );
     free_rgb_image(&full);
     free_hsv_image(&hsv);
     return filter_done;
@@ -1299,7 +1325,9 @@ void cam_cleanup(void) {
     if (g_cam.xfer_buffer_a) { free(g_cam.xfer_buffer_a); g_cam.xfer_buffer_a = NULL; }
     if (g_cam.xfer_buffer_b) { free(g_cam.xfer_buffer_b); g_cam.xfer_buffer_b = NULL; }
     if (g_cam.frame_buffer) { free(g_cam.frame_buffer); g_cam.frame_buffer = NULL; }
-    if (g_cam.frame_copy_buf) { free(g_cam.frame_copy_buf); g_cam.frame_copy_buf = NULL; }
+    for (int i = 0; i < FRAME_BUF_COUNT; i++) {
+        if (g_cam.frame_copy_buf[i]) { free(g_cam.frame_copy_buf[i]); g_cam.frame_copy_buf[i] = NULL; }
+    }
     if (g_cam.frame_sem) { vSemaphoreDelete(g_cam.frame_sem); g_cam.frame_sem = NULL; }
 
     g_cam.initialized = false;
