@@ -43,9 +43,10 @@ extern "C" {
 #define CAM_ERR_NOT_FOUND  -5
 
 #define MIN_PIXELS 50
-#define LINE_MODE 0
+#define LINE_MODE1 0
 #define REDBALL_MODE 1
 #define BLUEBALL_MODE 2
+#define LINE_MODE2 3
 
 /* ==================== 数据结构 ==================== */
 
@@ -121,6 +122,15 @@ void storage_load(void);
  */
 bool get_mask(BWImage* mask, int mode);
 
+/** 取图函数加强版
+ * @param mask 获取黑白图的存储指针
+ * @param row_start 起始行
+ * @param row_end   终止行
+ * @param type 切换函数功能的指示符
+ * @return  false表示取图失败，mask中不是有效内容，true表示成功
+ */
+bool get_mask_pro(BWImage* mask, int row_start, int row_end, int mode);
+
 /* ============ 摄像头功能函数 ============ */
 /**
  * 初始化摄像头驱动
@@ -142,6 +152,31 @@ int cam_start_stream(void);
 int cam_stop_stream(void);
 
 /**
+ * 捕获一帧并解码为灰度图，然后输出滤波后的黑白图，只截取指定行区间（所有列全保留）
+ * @param mask       输出: 行区间视黑白图，mask->data有独立动态空间
+ * @param row_start  起始行 (含)，负值按 0 处理
+ * @param row_end    结束行 (不含)，<=0 表示截到图像底边（0,0 = 整帧）
+ * @param timeout_ms 超时时间(毫秒)
+ * @param threshole  过滤阈值，小于此值的像素置为黑色
+ * @return           0=成功, 负数=错误码
+ */
+
+int cam_capture_linemask(BWImage *mask, int row_start, int row_end, uint32_t timeout_ms, uint8_t thres);
+
+/**
+ * 捕获一帧并解码为RGB，然后输出滤波后的黑白图，只截取指定行区间（所有列全保留）
+ * @param mask       输出: 行区间视黑白图，mask->data有独立动态空间
+ * @param row_start  起始行 (含)，负值按 0 处理
+ * @param row_end    结束行 (不含)，<=0 表示截到图像底边（0,0 = 整帧）
+ * @param upper[3]   滤波上限
+ * @param lower[3]   滤波下限
+ * @param timeout_ms 超时时间(毫秒)
+ * @return           0=成功, 负数=错误码
+ */
+
+int cam_capture_ballmask(BWImage *mask, int row_start, int row_end, uint32_t timeout_ms, uint8_t upper[3], uint8_t lower[3]);
+
+/**
  * 捕获一帧并解码为RGB，只截取指定行区间（所有列全保留），零拷贝
  * @param rgb        输出: 行区间视图，data 指向 full->data 内部（勿 free rgb，应 free full）
  * @param full       输出: 整帧解码结果，拥有底层缓冲，用完后必须 free_rgb_image(full) 释放
@@ -151,6 +186,17 @@ int cam_stop_stream(void);
  * @return           0=成功, 负数=错误码
  */
 int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, uint32_t timeout_ms);
+
+/**
+ * 抓一帧并直接解码为灰度图（亮度 Y），跳过 RGB888 与 HSV 流程，用于巡线等只需亮度阈值的场景。
+ * 内部：MJPEG -> RGB565 -> 64KB 查表转灰度，输出 1 字节/像素。
+ * @param gray       输出: 灰度图 (0=黑, 255=白)，data 在 PSRAM，用 free_bw_image() 释放
+ * @param row_start  起始行(含)，负值按 0 处理
+ * @param row_end    结束行(不含)，<=0 表示截到图像底边（0,0 = 整帧）
+ * @param timeout_ms 超时时间(毫秒)
+ * @return           0=成功, 负数=错误码
+ */
+int cam_capture_gray(BWImage *gray, int row_start, int row_end, uint32_t timeout_ms);
 
 /**
  * RGB转灰度图 (原地修改)
@@ -222,6 +268,15 @@ int rgb_to_jpeg(const RGBImage *rgb, unsigned char **out_data, size_t *out_size)
  * @return         CAM_OK / CAM_ERR_PARAM / CAM_ERR_MEMORY / CAM_ERR
  */
 int hsv_to_jpeg(const HSVImage *hsv, unsigned char **out_data, size_t *out_size);
+
+/**
+ * 灰度图(BWImage)编码为JPEG灰度字节流
+ * @param bw       输入灰度图（1 通道，0=黑 255=白）
+ * @param out_data 输出：JPEG字节流（malloc分配，调用者 free 释放）
+ * @param out_size 输出：JPEG字节数
+ * @return         CAM_OK / CAM_ERR_PARAM / CAM_ERR_MEMORY / CAM_ERR
+ */
+int gray_to_jpeg(const BWImage *bw, unsigned char **out_data, size_t *out_size);
 
 /**
  * 二值图转RGB可视化图：0(黑线)->白，255(场地)->黑，用于电脑端查看滤波结果

@@ -13,7 +13,7 @@ static const char *TAG = "TEST_BLE_CAM";
 /* 发送哪种滤波结果：LINE_MODE 黑线 / REDBALL_MODE 红球 / BLUEBALL_MODE 蓝球 */
 #define FILTER_MODE     BLUEBALL_MODE
 
-#if 1  /* 使用 test_ble_cam.c 作为入口时，此处注释掉，避免重复 app_main */
+#if 0  /* 使用 test_ble_cam.c 作为入口时，此处注释掉，避免重复 app_main */
 
 void app_main(void) {
     /* 1. 挂载存储区 */

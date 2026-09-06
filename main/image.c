@@ -403,7 +403,7 @@ int image_follow(void)
     int64_t a = esp_timer_get_time();
     int64_t b;
     // ---------- 1. 取一帧二值图（黑线=0，场地=255）----------
-    if (!get_mask(&mask, LINE_MODE))
+    if (!get_mask_pro(&mask, 143, 0, LINE_MODE2))
     {
         b = esp_timer_get_time();
         ESP_LOGE(TAG, "取图用时：%lld", b - a);
@@ -515,7 +515,7 @@ int image_follow_stop(void)
     bool    cross_line = false;   // 终点/横线标志：当前未使用（终点停车逻辑已注释）
 
     // ---------- 1. 取一帧二值图（黑线=0，场地=255）----------
-    if (!get_mask(&mask, LINE_MODE))
+    if (!get_mask_pro(&mask, 143, 0, LINE_MODE2))
     {
         free_bw_image(&mask);      // 失败时 mask 里也可能已分配，统一释放
         s_noframe_cnt++;

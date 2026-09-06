@@ -23,6 +23,7 @@
  * 放在顶部，避免靠前位置使用这些符号时出现隐式声明。 */
 #include "esp_jpeg_dec.h"
 #include "esp_jpeg_enc.h"
+#include "esp_heap_caps.h"
 
 /* ==================== 日志标签 ==================== */
 static const char *TAG = "CAM_AUDIO";
@@ -345,7 +346,7 @@ int cam_capture_frame(unsigned char **data, size_t *size, uint32_t timeout_ms) {
     ESP_LOGW(TAG, "抓帧-1: 有信号量但无数据 (size=%u)", (unsigned)g_cam.last_frame_size);
     return CAM_ERR;
 }
-//ccx
+
 int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, uint32_t timeout_ms) {
     unsigned char *data = NULL;
     size_t size = 0;
@@ -355,14 +356,14 @@ int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, u
     memset(rgb, 0, sizeof(*rgb));
     memset(full, 0, sizeof(*full));
 
-    int64_t t_start = esp_timer_get_time();
+    //int64_t t_start = esp_timer_get_time();
 
     ret = cam_capture_frame(&data, &size, timeout_ms);
     if (ret != CAM_OK) {
         return ret;   /* 透传真实错误码（超时/未初始化等），供上层区分 */
     }
 
-    int64_t t_cap = esp_timer_get_time();
+    //int64_t t_cap = esp_timer_get_time();
 
     /* 整帧解码到 full；full 拥有整块底层缓冲，用完后由调用方 free_rgb_image(full) 释放 */
     ret = decode_mjpeg_to_rgb(data, size, full);
@@ -370,7 +371,7 @@ int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, u
         return ret;
     }
 
-    int64_t t_decode = esp_timer_get_time();
+    //int64_t t_decode = esp_timer_get_time();
 
     /* 行区间约定：[row_start, row_end) 左闭右开，所有列全部保留。
      * row_start 负值按 0 处理；row_end <= 0 表示一直截到图像底边（传 0,0 = 整帧）。 */
@@ -395,12 +396,12 @@ int cam_capture_rgb(RGBImage *rgb, RGBImage *full, int row_start, int row_end, u
     rgb->channels   = 3;
     rgb->total_size = nrows * row_bytes;
 
-    int64_t t_cut = esp_timer_get_time();
-    ESP_LOGI(TAG, "计时: 抓取=%lld ms, 解码=%lld ms, 裁剪=%lld ms, 合计=%lld ms",
-                     (long long)(t_cap - t_start) / 1000,
-                     (long long)(t_decode - t_cap) / 1000,
-                     (long long)(t_cut - t_decode) / 1000,
-                     (long long)(t_cut - t_start) / 1000);
+    //int64_t t_cut = esp_timer_get_time();
+    //ESP_LOGI(TAG, "计时: 抓取=%lld ms, 解码=%lld ms, 裁剪=%lld ms, 合计=%lld ms",
+    //                (long long)(t_cap - t_start) / 1000,
+    //                (long long)(t_decode - t_cap) / 1000,
+    //                (long long)(t_cut - t_decode) / 1000,
+    //                (long long)(t_cut - t_start) / 1000);
 
     return CAM_OK;
 }
@@ -754,6 +755,338 @@ void free_rgb_image(RGBImage *rgb) {
     }
 }
 
+/* ==================== MJPEG -> 灰度快路径 ==================== */
+/* JPEG 原生就是 YCbCr，亮度 Y 即灰度；但本 esp_jpeg 解码器（预编译库）只支持
+ * 输出 RGB888/RGB565，不能直接吐 Y。于是退而求其次：解码成 RGB565（比 RGB888
+ * 少 1/3 输出带宽），再用一张 64KB 查表一次索引转灰度，省掉颜色转换与 HSV 流程。 */
+
+/* RGB565(LE) uint16 值 -> 灰度 LUT，建在 PSRAM，64KB */
+static uint8_t *s_gray_lut = NULL;
+
+static void gray_lut_ensure(void) {
+    if (s_gray_lut) return;
+    s_gray_lut = (uint8_t *)heap_caps_malloc(65536, MALLOC_CAP_SPIRAM);
+    if (!s_gray_lut) {
+        ESP_LOGE(TAG, "灰度 LUT 分配失败 (PSRAM)");
+        return;
+    }
+    for (uint32_t i = 0; i < 65536; i++) {
+        int r5 = (int)((i >> 11) & 0x1F);
+        int g6 = (int)((i >> 5)  & 0x3F);
+        int b5 = (int)( i        & 0x1F);
+        /* Rec.601：Y = 0.299R + 0.587G + 0.114B；R/B 为 5 位、G 为 6 位，先还原到 0~255 */
+        float y = 0.299f * (r5 * 255.0f / 31.0f)
+                + 0.587f * (g6 * 255.0f / 63.0f)
+                + 0.114f * (b5 * 255.0f / 31.0f);
+        s_gray_lut[i] = (uint8_t)(y + 0.5f);
+    }
+}
+
+/* 解码 MJPEG -> RGB565(LE) 原始缓冲。out_data 由 jpeg_malloc_align 分配，
+ * 调用者用 jpeg_free_align 释放；成功返回 CAM_OK 并填 out_w/out_h。 */
+static int decode_mjpeg_to_rgb565(unsigned char *mjpeg, size_t size,
+                                  uint8_t **out_data, int *out_w, int *out_h) {
+    jpeg_dec_handle_t *jpeg_dec = NULL;
+    jpeg_dec_io_t *jpeg_io = NULL;
+    jpeg_dec_header_info_t *out_info = NULL;
+    int ret = CAM_ERR;
+
+    if (!mjpeg || !size || !out_data || !out_w || !out_h) return CAM_ERR_PARAM;
+    *out_data = NULL;
+
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_RAW_TYPE_RGB565_LE;
+    config.rotate = JPEG_ROTATE_180D;   /* 摄像头原生上下颠倒，解码时直接纠正 */
+
+    jpeg_dec = jpeg_dec_open(&config);
+    if (!jpeg_dec) {
+        ESP_LOGE(TAG, "解码-灰度: jpeg_dec_open 失败");
+        return CAM_ERR;
+    }
+
+    jpeg_io = calloc(1, sizeof(jpeg_dec_io_t));
+    out_info = calloc(1, sizeof(jpeg_dec_header_info_t));
+    if (!jpeg_io || !out_info) {
+        ret = CAM_ERR_MEMORY;
+        goto cleanup;
+    }
+
+    jpeg_io->inbuf = mjpeg;
+    jpeg_io->inbuf_len = (int)size;
+
+    if (jpeg_dec_parse_header(jpeg_dec, jpeg_io, out_info) != JPEG_ERR_OK) {
+        goto cleanup;
+    }
+
+    int w = out_info->width;
+    int h = out_info->height;
+    int total = w * h * 2;   /* RGB565 每像素 2 字节 */
+
+    uint8_t *buf = (uint8_t *)jpeg_malloc_align(total, 16);
+    if (!buf) {
+        ret = CAM_ERR_MEMORY;
+        goto cleanup;
+    }
+
+    int inbuf_consumed = jpeg_io->inbuf_len - jpeg_io->inbuf_remain;
+    jpeg_io->inbuf = mjpeg + inbuf_consumed;
+    jpeg_io->inbuf_len = jpeg_io->inbuf_remain;
+    jpeg_io->outbuf = buf;
+
+    if (jpeg_dec_process(jpeg_dec, jpeg_io) != JPEG_ERR_OK) {
+        jpeg_free_align(buf);
+        goto cleanup;
+    }
+
+    *out_data = buf;
+    *out_w = w;
+    *out_h = h;
+    ret = CAM_OK;
+
+cleanup:
+    if (out_info) free(out_info);
+    if (jpeg_io) free(jpeg_io);
+    if (jpeg_dec) jpeg_dec_close(jpeg_dec);
+    return ret;
+}
+
+/* 抓一帧并解码为灰度图。row_start/row_end 约定同 cam_capture_rgb：
+ * [row_start, row_end) 左闭右开，所有列保留；row_start<0 按 0，row_end<=0 截到底。
+ * 输出 gray->data 为 w×nrows 的灰度(亮度)图，0=黑 255=白，用 free_bw_image() 释放。 */
+int cam_capture_gray(BWImage *gray, int row_start, int row_end, uint32_t timeout_ms) {
+    unsigned char *data = NULL;
+    size_t size = 0;
+    int ret;
+
+    if (!gray) return CAM_ERR_PARAM;
+    memset(gray, 0, sizeof(*gray));
+
+    ret = cam_capture_frame(&data, &size, timeout_ms);
+    if (ret != CAM_OK) return ret;
+
+    gray_lut_ensure();
+    if (!s_gray_lut) return CAM_ERR_MEMORY;
+
+    uint8_t *rgb565 = NULL;
+    int w = 0, h = 0;
+    ret = decode_mjpeg_to_rgb565(data, size, &rgb565, &w, &h);
+    if (ret != CAM_OK) return ret;
+
+    /* 行区间 */
+    int y1 = row_start < 0 ? 0 : row_start;
+    int y2 = (row_end <= 0) ? h : row_end;
+    if (y1 > h) y1 = h;
+    if (y2 > h) y2 = h;
+    if (y2 <= y1) {
+        jpeg_free_align(rgb565);
+        return CAM_ERR_PARAM;
+    }
+
+    int nrows = y2 - y1;
+    gray->data = (unsigned char *)heap_caps_malloc((size_t)w * nrows, MALLOC_CAP_DEFAULT);//ccx
+    if (!gray->data) {
+        jpeg_free_align(rgb565);
+        return CAM_ERR_MEMORY;
+    }
+    gray->width = w;
+    gray->height = nrows;
+    gray->channels = 1;
+
+    /* RGB565 -> 灰度，仅转换需要的行 */
+    const size_t row_px = (size_t)w;
+    for (int y = y1; y < y2; y++) {
+        const uint16_t *src = (const uint16_t *)(rgb565 + (size_t)y * row_px * 2);
+        uint8_t *dst = gray->data + (size_t)(y - y1) * row_px;
+        for (int x = 0; x < w; x++) {
+            dst[x] = s_gray_lut[src[x]];
+        }
+    }
+
+    jpeg_free_align(rgb565);
+    return CAM_OK;
+}
+
+
+
+
+
+
+
+
+
+
+int cam_capture_ballmask(BWImage *mask, int row_start, int row_end, uint32_t timeout_ms, uint8_t upper[3], uint8_t lower[3]) 
+{//MIN_PIXELS待调整
+    unsigned char *data = NULL;
+    size_t size = 0;
+    RGBImage full = {0};
+    int ret = CAM_ERR_TIMEOUT;
+
+    //int64_t t_start = esp_timer_get_time(); 
+    //int64_t t_cap = esp_timer_get_time();
+
+    if(!mask)return CAM_ERR_PARAM;
+
+    for (int t = 0; t < CONNECT_RETRY; t++) 
+    {
+        ret = cam_capture_frame(&data, &size, timeout_ms);        
+        if (ret == CAM_OK) break;
+        vTaskDelay(pdMS_TO_TICKS(70));
+        ESP_LOGE(TAG, "等待相机，%d", ret);
+    }
+    if (ret != CAM_OK) 
+    {
+        ESP_LOGE(TAG, "抓帧失败: %d",ret);
+        return ret;
+    }
+
+    ret = decode_mjpeg_to_rgb(data, size, &full);//data指向缓冲区，不能释放
+    if (ret != CAM_OK) {
+        free_rgb_image(&full);
+        return ret;
+    }
+
+    //int64_t t_decode = esp_timer_get_time();
+
+    /* 行区间约定：[row_start, row_end) 左闭右开，所有列全部保留。
+     * row_start 负值按 0 处理；row_end <= 0 表示一直截到图像底边（传 0,0 = 整帧）。 */
+    int y1 = row_start < 0 ? 0 : row_start;
+    int y2 = (row_end <= 0) ? full.height : row_end;
+    if (y1 > full.height) y1 = full.height;
+    if (y2 > full.height) y2 = full.height;
+    if (y2 <= y1) {
+        free_rgb_image(&full);
+        return CAM_ERR_PARAM;
+    }
+
+    const size_t row_bytes = (size_t)full.width * 3;
+    const size_t nrows     = (size_t)(y2 - y1);
+    const size_t offset    = (size_t)y1 * row_bytes;
+    uint8_t* in = full.data + offset;
+    memset(mask, 0, sizeof(BWImage));
+    mask->width      = full.width;
+    mask->height     = (int)nrows;
+    mask->channels   = 1;
+    size_t count = (size_t)full.width * nrows;
+    mask->data = (unsigned char *)malloc(count);
+    if (!mask->data) 
+    {
+        free_rgb_image(&full);
+        return CAM_ERR_MEMORY;
+    }
+
+    uint8_t *out = mask->data;
+    for (size_t i = 0; i < count; i++) {
+        bool ok = (in[0] >= lower[0] && in[0] <= upper[0]) &&
+                  (in[1] >= lower[1] && in[1] <= upper[1]) &&
+                  (in[2] >= lower[2] && in[2] <= upper[2]);
+        *out = ok ? 0 : 255;   /* 反转：范围内=0(黑)，范围外=255(白) */
+        in += 3;
+        out += 1;
+    }
+        
+    //int64_t t_end = esp_timer_get_time();
+    //ESP_LOGI(TAG, "重复请求+抓取+解码+裁剪=%lld ms, 滤波=%lld ms, get_mask总费时=%lld ms",
+    //        (long long)(t_cap - t_start) / 1000, 
+    //        (long long)(t_end - t_cap) / 1000, 
+    //        (long long)(t_end - t_start) / 1000 );
+    free_rgb_image(&full);
+    return CAM_OK;
+}
+
+
+/* 抓一帧并解码为过滤后黑白图。row_start/row_end 约定同 cam_capture_rgb：
+ * [row_start, row_end) 左闭右开，所有列保留；row_start<0 按 0，row_end<=0 截到底。
+ * 输出 mask->data 为 w×nrows 的黑白图，0=黑 255=白，用 free_bw_image() 释放。 */
+int cam_capture_linemask(BWImage *mask, int row_start, int row_end, uint32_t timeout_ms, uint8_t thres) {
+    unsigned char *data = NULL;
+    size_t size = 0;
+    int ret;
+
+    if (!mask) return CAM_ERR_PARAM;
+    memset(mask, 0, sizeof(*mask));
+
+    for (int t = 0; t < CONNECT_RETRY; t++) 
+    {
+        ret = cam_capture_frame(&data, &size, timeout_ms);
+        if(ret == CAM_OK)break;
+        vTaskDelay(pdMS_TO_TICKS(70));
+        ESP_LOGE(TAG, "等待相机，%d", ret);
+    }
+    if (ret != CAM_OK) 
+    {
+        ESP_LOGE(TAG, "抓帧失败: %d",ret);
+        return ret;
+    }
+
+    gray_lut_ensure();
+    if (!s_gray_lut) return CAM_ERR_MEMORY;
+
+    uint8_t *rgb565 = NULL;
+    int w = 0, h = 0;
+    ret = decode_mjpeg_to_rgb565(data, size, &rgb565, &w, &h);
+    if (ret != CAM_OK) return ret;
+
+    /* 行区间 */
+    int y1 = row_start < 0 ? 0 : row_start;
+    int y2 = (row_end <= 0) ? h : row_end;
+    if (y1 > h) y1 = h;
+    if (y2 > h) y2 = h;
+    if (y2 <= y1) {
+        jpeg_free_align(rgb565);
+        return CAM_ERR_PARAM;
+    }
+
+    int nrows = y2 - y1;
+    mask->data = (unsigned char *)heap_caps_malloc((size_t)w * nrows, MALLOC_CAP_DEFAULT);
+    if (!mask->data) {
+        jpeg_free_align(rgb565);
+        return CAM_ERR_MEMORY;
+    }
+    mask->width = w;
+    mask->height = nrows;
+    mask->channels = 1;
+
+    /* RGB565 -> 灰度 ->黑白，仅转换需要的行 */
+    const size_t row_px = (size_t)w;
+    for (int y = y1; y < y2; y++) {
+        const uint16_t *src = (const uint16_t *)(rgb565 + (size_t)y * row_px * 2);
+        uint8_t *dst = mask->data + (size_t)(y - y1) * row_px;
+        for (int x = 0; x < w; x++) {
+            dst[x] = s_gray_lut[src[x]] < thres ? 0 : 255; 
+        }
+    }
+    jpeg_free_align(rgb565);
+    return CAM_OK;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 int save_rgb_as_ppm(const char *filename, const RGBImage *rgb) {
     FILE *fp;
     if (!rgb || !rgb->data) return CAM_ERR_PARAM;
@@ -837,6 +1170,62 @@ int hsv_to_jpeg(const HSVImage *hsv, unsigned char **out_data, size_t *out_size)
     // 生成一张"用颜色显示 H/S/V 各通道"的可视化图（调试用）
     if (!hsv || !hsv->data || hsv->channels != 3) return CAM_ERR_PARAM;
     return raw_rgb888_to_jpeg(hsv->data, hsv->width, hsv->height, out_data, out_size);
+}
+
+// 灰度图 (BWImage, 1 字节/像素) -> JPEG 灰度字节流
+// 用编码器的 JPEG_RAW_TYPE_GRAY 直接编码灰度，比转 RGB888 再编码体积更小、更快。
+// 输出用 malloc 分配，调用者负责 free。
+int gray_to_jpeg(const BWImage *bw, unsigned char **out_data, size_t *out_size)
+{
+    if (!bw || !bw->data || bw->channels != 1) return CAM_ERR_PARAM;
+    if (bw->width <= 0 || bw->height <= 0) return CAM_ERR_PARAM;
+    *out_data = NULL;
+    *out_size = 0;
+
+    int w = bw->width, h = bw->height;
+
+    jpeg_enc_info_t info = DEFAULT_JPEG_ENC_CONFIG();
+    info.width       = w;
+    info.height      = h;
+    info.src_type    = JPEG_RAW_TYPE_GRAY;      /* 灰度源 */
+    info.subsampling = JPEG_SUB_SAMPLE_Y;       /* 灰度无彩色分量 */
+    info.quality     = JPEG_ENC_QUALITY;
+    info.task_enable = false;
+
+    void *handle = jpeg_enc_open(&info);
+    if (!handle) return CAM_ERR;
+
+    int in_len  = w * h;
+    int out_len = w * h * 2 + 4096;   /* 灰度 JPEG 不会超过该上限（留余量） */
+
+    uint8_t *inbuf  = (uint8_t *)jpeg_malloc_align(in_len, 16);  /* 编码输入需 16 字节对齐 */
+    uint8_t *outbuf = (uint8_t *)malloc(out_len);
+    int ret = CAM_ERR;
+
+    if (!inbuf || !outbuf) {
+        ret = CAM_ERR_MEMORY;
+        goto cleanup;
+    }
+    memcpy(inbuf, bw->data, in_len);
+
+    int out_size_i = 0;
+    if (jpeg_enc_process(handle, inbuf, in_len, outbuf, out_len, &out_size_i) != JPEG_ERR_OK) {
+        goto cleanup;
+    }
+
+    uint8_t *shrunk = (uint8_t *)realloc(outbuf, (size_t)out_size_i);  /* 收窄到实际大小 */
+    if (shrunk) outbuf = shrunk;
+
+    *out_data = outbuf;
+    *out_size = (size_t)out_size_i;
+    outbuf = NULL;      /* 所有权交给调用者 */
+    ret = CAM_OK;
+
+cleanup:
+    if (inbuf)  jpeg_free_align(inbuf);
+    if (outbuf) free(outbuf);
+    jpeg_enc_close(handle);
+    return ret;
 }
 
 // 二值图 -> RGB 可视化图（0=黑线 -> 白，255=场地 -> 黑），用于电脑端查看滤波结果
@@ -1238,27 +1627,30 @@ bool get_mask(BWImage* mask, int mode)
     bool filter_done = false;
     int ret = CAM_ERR_TIMEOUT;
 
-    int64_t t_start = esp_timer_get_time(); 
-   /* 摄像头刚启动需要一点时间连接，超时则重试 */
-    for (int t = 0; t < CONNECT_RETRY; t++) {
-        /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
-        ret = cam_capture_rgb(&rgb, &full, 143, 0, 100);//从143开始截取到最底部，100ms内要求取到一帧原始帧
-        if (ret == CAM_OK) break;
-        vTaskDelay(pdMS_TO_TICKS(70));
-        ESP_LOGE(TAG, "等待相机，%d", ret);
-    }
+    //int64_t t_start = esp_timer_get_time(); 
+    //int64_t t_cap = esp_timer_get_time();
     
-    if (ret != CAM_OK) {
+
+    if (mode == REDBALL_MODE)
+    {
+            /* 摄像头刚启动需要一点时间连接，超时则重试 */
+        for (int t = 0; t < CONNECT_RETRY; t++) 
+        {
+            /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
+            ret = cam_capture_rgb(&rgb, &full, 143, 0, 100);//从143开始截取到最底部，100ms内要求取到一帧原始帧
+            if (ret == CAM_OK) break;
+            vTaskDelay(pdMS_TO_TICKS(70));
+            ESP_LOGE(TAG, "等待相机，%d", ret);
+        }
+        
+        if (ret != CAM_OK) 
+        {
             ESP_LOGE(TAG, "抓帧失败: %d",ret);
             return false;
         }
-    int64_t t_cap = esp_timer_get_time();
-    
-    if (mode == REDBALL_MODE)
-    {
+
         const uint8_t red_rgb_lower[3] = {144, 53, 40};        //r,g,b三值下值（滑块是BGR，这里已对调成RGB）
         const uint8_t red_rgb_upper[3] = {255, 102, 129};    //r,g,b三值上值（滑块是BGR，这里已对调成RGB）
-
         //const uint8_t red_rgb_lower[3] = {40, 53, 144};        //r,g,b三值下值（滑块是BGR，这里未对调成RGB）
         //const uint8_t red_rgb_upper[3] = {129, 102, 255};    //r,g,b三值上值（滑块是BGR，这里未对调成RGB）
         ret = rgb_in_range(&rgb, red_rgb_lower, red_rgb_upper, mask);
@@ -1272,6 +1664,21 @@ bool get_mask(BWImage* mask, int mode)
     }
     else if(mode == BLUEBALL_MODE)
     {
+            /* 摄像头刚启动需要一点时间连接，超时则重试 */
+        for (int t = 0; t < CONNECT_RETRY; t++) 
+        {
+            /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
+            ret = cam_capture_rgb(&rgb, &full, 143, 0, 100);//从143开始截取到最底部，100ms内要求取到一帧原始帧
+            if (ret == CAM_OK) break;
+            vTaskDelay(pdMS_TO_TICKS(70));
+            ESP_LOGE(TAG, "等待相机，%d", ret);
+        }
+        
+        if (ret != CAM_OK) 
+        {
+            ESP_LOGE(TAG, "抓帧失败: %d",ret);
+            return false;
+        }
         const uint8_t blu_rgb_lower[3] = {52, 65, 135};        //r,g,b三值下值（滑块是BGR，这里已对调成RGB）
         const uint8_t blu_rgb_upper[3] = {113, 136, 237};    //r,g,b三值上值（滑块是BGR，这里已对调成RGB）
         ret = rgb_in_range(&rgb, blu_rgb_lower, blu_rgb_upper, mask);
@@ -1283,8 +1690,23 @@ bool get_mask(BWImage* mask, int mode)
         }
         filter_done = filter_dot_and_blobs(mask);
     }
-    else
+    else if(mode == LINE_MODE1)//暂时保留
     {
+            /* 摄像头刚启动需要一点时间连接，超时则重试 */
+        for (int t = 0; t < CONNECT_RETRY; t++) 
+        {
+            /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
+            ret = cam_capture_rgb(&rgb, &full, 143, 0, 100);//从143开始截取到最底部，100ms内要求取到一帧原始帧
+            if (ret == CAM_OK) break;
+            vTaskDelay(pdMS_TO_TICKS(70));
+            ESP_LOGE(TAG, "等待相机，%d", ret);
+        }
+    
+        if (ret != CAM_OK) 
+        {
+            ESP_LOGE(TAG, "抓帧失败: %d",ret);
+            return false;
+        }
         ret = rgb_to_hsv(&rgb, &hsv);
         if(ret != CAM_OK)
         {
@@ -1305,14 +1727,96 @@ bool get_mask(BWImage* mask, int mode)
         }
         filter_done = filter_dot_and_blobs(mask);
     }
-    int64_t t_end = esp_timer_get_time();
-    ESP_LOGI(TAG, "重复请求+抓取+解码+裁剪=%lld ms, 滤波=%lld ms, get_mask总费时=%lld ms",
-            (long long)(t_cap - t_start) / 1000, 
-            (long long)(t_end - t_cap) / 1000, 
-            (long long)(t_end - t_start) / 1000 );
+    else//LINEMODE2
+    {
+        /* 灰度快路径：抓帧直接解码为灰度，跳过 RGB888 与 HSV 流程，适合纯黑线巡线 */
+        const uint8_t GRAY_THRESH = 128;   /* 黑线亮度阈值：<128 视为黑线(前景0)，对应原 HSV 的 V≤133，实测可调 */
+
+        for (int t = 0; t < CONNECT_RETRY; t++) {
+            /* 143,0 = 从第 143 行截到最底部；0,0 = 整帧 */
+            ret = cam_capture_gray(mask, 143, 0, 100);
+            if (ret == CAM_OK) break;
+            vTaskDelay(pdMS_TO_TICKS(70));
+            ESP_LOGE(TAG, "等待相机(灰度)，%d", ret);
+        }
+
+        if (ret != CAM_OK) {
+            ESP_LOGE(TAG, "灰度抓帧失败: %d", ret);
+            return false;
+        }
+
+        
+        /* 灰度 -> 二值掩码：暗像素(黑线)=前景0，亮像素(场地)=背景255 */
+        //const size_t n = (size_t)mask->width * mask->height;
+        //for (size_t i = 0; i < n; i++) {
+        //    mask->data[i] = (mask->data[i] < GRAY_THRESH) ? 0 : 255;
+        filter_done = filter_dot_and_blobs(mask);
+    }
+    
+    //int64_t t_end = esp_timer_get_time();
+    //ESP_LOGI(TAG, "重复请求+抓取+解码+裁剪=%lld ms, 滤波=%lld ms, get_mask总费时=%lld ms",
+    //        (long long)(t_cap - t_start) / 1000, 
+    //        (long long)(t_end - t_cap) / 1000, 
+    //        (long long)(t_end - t_start) / 1000 );
     free_rgb_image(&full);
     free_hsv_image(&hsv);
     return filter_done;
+}
+
+
+const uint8_t red_rgb_lower[3] = {144, 53, 40};        //r,g,b三值下值（滑块是BGR，这里已对调成RGB）
+const uint8_t red_rgb_upper[3] = {255, 102, 129};    //r,g,b三值上值（滑块是BGR，这里已对调成RGB）
+//const uint8_t red_rgb_lower[3] = {40, 53, 144};        //r,g,b三值下值（滑块是BGR，这里未对调成RGB）
+//const uint8_t red_rgb_upper[3] = {129, 102, 255};    //r,g,b三值上值（滑块是BGR，这里未对调成RGB）
+const uint8_t blu_rgb_lower[3] = {52, 65, 135};        //r,g,b三值下值（滑块是BGR，这里已对调成RGB）
+const uint8_t blu_rgb_upper[3] = {113, 136, 237};    //r,g,b三值上值（滑块是BGR，这里已对调成RGB）
+const uint8_t gray_threshole = 104;//可能得改进为两个阈值ccx
+
+bool get_mask_pro(BWImage* mask, int row_start, int row_end, int mode)
+{//MIN_PIXELS待调整
+
+    int ret = CAM_ERR_TIMEOUT;
+    if(!mask)
+    {
+        ESP_LOGE(TAG, "get_mask_pro参数错误");
+        return false;
+    }
+    switch (mode)
+    {
+    case REDBALL_MODE:
+        ret = cam_capture_ballmask(mask, row_start, row_end, 100, red_rgb_upper, red_rgb_lower);
+        if(ret != CAM_OK)
+        {
+            ESP_LOGE(TAG, "红球取图失败, ret=%d", ret);
+            return false;
+        }
+        break;
+    case BLUEBALL_MODE:
+        ret = cam_capture_ballmask(mask, row_start, row_end, 100, blu_rgb_upper, blu_rgb_lower);
+        if(ret != CAM_OK)
+        {
+            ESP_LOGE(TAG, "蓝球取图失败, ret=%d", ret);
+            return false;
+        }
+        break;
+    case LINE_MODE2:
+        ret = cam_capture_linemask(mask, row_start, row_end, 100, gray_threshole);
+        if(ret != CAM_OK)
+        {
+            ESP_LOGE(TAG, "黑线取图失败, ret=%d", ret);
+            return false;
+        }
+        break;
+    default:
+        return false;
+    }
+    
+    //int64_t t_end = esp_timer_get_time();
+    //ESP_LOGI(TAG, "重复请求+抓取+解码+裁剪=%lld ms, 滤波=%lld ms, get_mask总费时=%lld ms",
+    //        (long long)(t_cap - t_start) / 1000, 
+    //        (long long)(t_end - t_cap) / 1000, 
+    //        (long long)(t_end - t_start) / 1000 );
+    return true;
 }
 
 /* ==================== 清理函数 ==================== */
