@@ -2,6 +2,7 @@
 #include "pins.h"
 #include "utils.h"
 #include "driver/gpio.h"
+#include "esp_log.h"
 
 // ================================================================
 // 电机运动控制 —— 框架
@@ -25,6 +26,7 @@ void motor_init(void)
 
     // 使能驱动板（STBY 不拉高，电机不动）
     //gpio_set_level(STBY, 1);
+    ESP_LOGI("MOTOR", "Motor init success!");
 }
 
 // 电机单独控制
@@ -121,6 +123,19 @@ void motor_turn_plus_CCW(float duty)//逆时针
     motorA_CW(duty);
     motorB_CW(duty);
     motorD_CW(duty);
+}
+
+// 1是顺时针，-1是逆时针
+void motor_turn_plus(int dir, float duty)
+{
+    if (dir == 1)
+    {
+        motor_turn_plus_CW(duty);
+    }
+    else if (dir == -1)
+    {
+        motor_turn_plus_CCW(duty);
+    }
 }
 
 void motor_stop_drive(void)

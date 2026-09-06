@@ -11,3 +11,10 @@ managed_components/
 # IDE 配置（含本机绝对路径）
 .vscode/
 .clangd
+
+main/test_ble_cam.c
+main/test_cam.c
+main/test_audio.c
+main/test_avoid.c
+main/test_follow.c
+main/test_mask.c

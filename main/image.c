@@ -3,8 +3,11 @@
 #include "motor.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "led_strip.h"      // 板载 WS2812（GPIO38）驱动
+#include "pins.h"           // LED_GPIO / LED_NUM
 #include <math.h>
 
 // ================================================================
@@ -26,50 +29,56 @@ static const char *TAG = "IMAGE";
 // —— 视觉 ROI ——
 #define IMG_COL_STEP              2        // 列扫描步长，越大越省 CPU（1=逐像素）
 #define IMG_BLACK_TH              128      // 灰度阈值，像素 < 此值判为黑线（mask 是 0/255）
-#define IMG_SEG_MIN_RATIO         0.015f   // 黑段最小宽度（占图宽比例），更窄的当噪点丢弃
-#define IMG_SEG_MAX_RATIO         0.60f    // 黑段最大宽度，更宽的判为横线/终点线
+#define IMG_SEG_MIN_RATIO         0.01f   // 黑段最小宽度（占图宽比例），更窄的当噪点丢弃
+#define IMG_SEG_MAX_RATIO         0.30f    // 黑段最大宽度，更宽的判为横线/终点线（0.3=图宽30%）
 
 // ROI 区段：在图像高度的 [TOP, BOT] 区间内，每隔 IMG_ROI_ROW_STEP 行扫一条
 //   1.0 = 画面最底部（最近处），0.0 = 画面最顶部（最远处）
-#define IMG_ROI_BOT_RATIO         0.95f    // 最近处行位置（画面底部）
+#define IMG_ROI_BOT_RATIO         1.0f     // 最近处行位置（画面底部，取到图像最底）
 #define IMG_ROI_TOP_RATIO         0.55f    // 最远处行位置（画面顶部）
 #define IMG_ROI_ROW_STEP          2        // 每隔多少行扫一条（越大越省 CPU）
+// ROI 列范围：仅在画面水平方向 [LEFT, RIGHT] 区间内找线（0.0=画面最左，1.0=画面最右）
+// 默认全宽；若线常跑到画面左右边缘被场地/边界干扰，可往里收窄（注意会把跑到窗口外的线判为丢线）
+#define IMG_ROI_LEFT_RATIO        0.0f     // 找线区间左边界（画面最左）
+#define IMG_ROI_RIGHT_RATIO       1.0f     // 找线区间右边界（画面最右）
+
 // 扫描行权重：底部(最近处) IMG_ROI_WEIGHT_NEAR，顶部(最远处) IMG_ROI_WEIGHT_FAR，两值间线性插值
-// 与原 5 行权重表(近3.0 渐减到 远1.0)逐点一致，PID 无需重调
-#define IMG_ROI_WEIGHT_NEAR       3.0f
-#define IMG_ROI_WEIGHT_FAR        1.0f
+// 注：权重是对 y 的比例线性插值，随 ROI 区间 [TOP,BOT] 变化自动适配
+#define IMG_ROI_WEIGHT_NEAR       4.0f
+#define IMG_ROI_WEIGHT_FAR        0.5f
 #define IMG_ROI_MIN_VALID_RATIO   0.05f    // 有效行数占扫描行数比例低于此值判为丢线（防单行噪点误判）
-#define IMG_ERROR_IGNORE_WIDE     0        // 1=超宽行不参与误差平均(更不易被横线干扰)，0=保留旧行为(参与)
+#define IMG_ERROR_IGNORE_WIDE     0        // 0=超宽行参与误差平均(沿用旧行为)；1=超宽行不参与误差平均
 
 // 横线 / 终点线判据：仅统计行坐标落在 [CROSS_TOP, CROSS_BOT] 区间内的超宽行
-#define IMG_CROSS_BOT_RATIO       0.95f    // 判据下边界（画面底部 / 最近处）
-#define IMG_CROSS_TOP_RATIO       0.85f    // 判据上边界
+#define IMG_CROSS_BOT_RATIO       1.0f     // 判据下边界（画面底部 / 最近处）
+#define IMG_CROSS_TOP_RATIO       0.8f     // 判据上边界
 #define IMG_CROSS_MIN_ROWS        4        // 该区间内至少几行超宽才判定为横线/终点线，防误停
 
 // —— PID（待定，需实车整定）——
 // 误差已归一化到 ±1，所以 kp 比红外版 follow() 里的 0.03 大一个量级
-#define IMG_KP                    0.10f    // 比例：偏差越大，差速修正越强
+#define IMG_KP                    0.08f    // 比例：偏差越大，差速修正越强（直线来回摆时先降 Kp）
 #define IMG_KI                    0.0f     // 积分：默认关闭，消不掉的稳态偏差再开（建议 <0.02）
-#define IMG_KD                    0.02f    // 微分：阻尼左右摆动，防蛇形
+#define IMG_KD                    0.0f    // 微分：阻尼左右摆动，防蛇形
 #define IMG_I_MAX                 0.05f    // 积分限幅（抗饱和）
-#define IMG_D_ALPHA               0.6f     // 误差低通系数(0~1]，越小越平滑，抑制视觉噪声
-#define IMG_DEADBAND              0.05f    // 死区：|error| 小于此值视为居中，直接直行
+#define IMG_D_ALPHA               0.5f     // 误差低通系数(0~1]，越小越平滑，抑制视觉噪声
+#define IMG_DEADBAND              0.05f    // 死区：|error| 小于此值视为居中，直接直行（放宽以压直线上抖动）
 #define IMG_STEER_SIGN            (+1.0f)  // 若上车"越修越偏"，把这里改成 -1.0f
 
 // —— 速度（待定）——
 #define IMG_BASE_SPEED            0.14f    // 直线基准占空比 0~1
 #define IMG_MIN_SPEED             0.10f    // 弯道减速下限，太小会推不动
-#define IMG_MAX_STEER             0.12f    // 差速修正量上限，建议不超过 IMG_BASE_SPEED
-#define IMG_K_SLOW                0.5f     // 弯道减速强度：base*(1-K_SLOW*(|error|+|curve|))
+#define IMG_MAX_STEER             0.10f  
+  // 差速修正量上限，建议不超过 IMG_BASE_SPEED
+#define IMG_K_SLOW                0.1f     // 弯道减速强度：base*(1-K_SLOW*(|error|+|curve|))
 
 // —— 丢线 / 异常 ——
-#define IMG_LOST_HOLD_MS          100      // 丢线后先保持上一轮动作的时间
+#define IMG_LOST_HOLD_MS          300      // 丢线后先保持上一轮动作的时间
 #define IMG_LOST_SEARCH_MS        10000     // 原地搜索总超时，超过则停车返回 LOST
-#define IMG_SEARCH_SPEED          0.10f    // 原地搜索旋转速度
+#define IMG_SEARCH_SPEED          0.07f    // 原地搜索旋转速度
 #define IMG_NOFRAME_MAX           10       // 连续取图失败多少次才停车
 
 // —— 调试 ——
-#define IMG_LOG_EVERY             10       // 每多少帧打印一次调试信息（0=不打印）
+#define IMG_LOG_EVERY             1       // 每多少帧打印一次调试信息（0=不打印）
 #define IMG_LOOP_DELAY_MS         1        // 每轮末尾的让出时间（ms），喂看门狗用
 
 /* ==================== 待调参数结束 ==================== */
@@ -86,6 +95,57 @@ static int64_t s_lost_start_us = 0;     // 丢线起始时刻（0=当前没有�
 static float   s_last_left    = 0.0f;   // 上一次左轮输出（仅用于调试打印）
 static float   s_last_right   = 0.0f;   // 上一次右轮输出（仅用于调试打印）
 static uint32_t s_frame_cnt   = 0;      // 帧计数，用于限频打印
+
+/* ==================== 板载 LED（WS2812，GPIO38）：丢线时亮红 ==================== */
+/* 用 led_strip 组件的 RMT 后端驱动 GPIO38 上的那颗 WS2812。
+ * 初始化是“惰性”的：带静态标志位，无论被调用多少次都只建一次。 */
+static led_strip_handle_t s_led      = NULL;
+static bool              s_led_ready = false;
+
+static void led_init(void)
+{
+    if (s_led_ready) return;
+
+    led_strip_config_t strip_config = {
+        .strip_gpio_num         = LED_GPIO,
+        .max_leds               = LED_NUM,
+        .led_model              = LED_MODEL_WS2812,
+        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
+        .flags = { .invert_out = false },
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .clk_src           = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz     = 10 * 1000 * 1000,   // 10MHz，WS2812 时序用
+        .mem_block_symbols = 0,
+        .flags = { .with_dma = false },
+    };
+
+    esp_err_t err = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_led);
+    if (err != ESP_OK || !s_led)
+    {
+        ESP_LOGE(TAG, "板载 LED 初始化失败: %s", esp_err_to_name(err));
+        s_led = NULL;
+        return;
+    }
+    s_led_ready = true;
+    led_strip_clear(s_led);      // 默认熄灭
+    led_strip_refresh(s_led);
+    ESP_LOGI(TAG, "板载 LED 初始化完成 (GPIO%d)", LED_GPIO);
+}
+
+// 设置唯一那颗 LED 的颜色（GRB 格式），并刷新到灯珠
+static void led_set_rgb(uint32_t r, uint32_t g, uint32_t b)
+{
+    if (!s_led_ready || !s_led) return;
+    led_strip_set_pixel(s_led, 0, r, g, b);
+    led_strip_refresh(s_led);
+}
+
+// 熄灭
+static void led_set_off(void)
+{
+    led_set_rgb(0, 0, 0);
+}
 
 /* ==================== 内部工具函数 ==================== */
 
@@ -106,10 +166,18 @@ static bool scan_row_center(const BWImage *mask, int y, float *center_x, bool *t
     const unsigned char *row = mask->data + (size_t)y * (size_t)mask->width;
     const int w = mask->width;
 
+    // 列范围：仅在水平方向 [LEFT, RIGHT] 内找线（0.0=画面最左，1.0=画面最右）
+    int x_left  = (int)(w * IMG_ROI_LEFT_RATIO);
+    int x_right = (int)(w * IMG_ROI_RIGHT_RATIO);
+    if (x_left < 0)           x_left  = 0;
+    if (x_left > w - 1)       x_left  = w - 1;
+    if (x_right < x_left + 1) x_right = x_left + 1;
+    if (x_right > w)          x_right = w;
+
     int best_start = -1, best_len = 0;   // 目前最长的黑段
     int cur_start  = -1, cur_len  = 0;   // 正在统计的黑段
 
-    for (int x = 0; x < w; x += IMG_COL_STEP)
+    for (int x = x_left; x < x_right; x += IMG_COL_STEP)
     {
         if (row[x] < IMG_BLACK_TH)       // 黑线像素
         {
@@ -317,6 +385,8 @@ int image_init(void)
     s_last_left   = 0.0f;
     s_last_right  = 0.0f;
 
+    led_init();      // 初始化板载 WS2812（GPIO38），丢线时用于亮红灯
+
     ESP_LOGI(TAG, "摄像头循迹初始化完成（相机由主程序初始化）");
     return 0;
 }
@@ -325,13 +395,19 @@ int image_follow(void)
 {
     int     state = IMAGE_FOLLOW_OK;
     BWImage mask  = {0};
+
+    led_init();      // 兜底：即使没走 image_init() 也能点亮 LED（惰性，只建一次）
     float   error = 0.0f;
     float   curve = 0.0f;
     bool    cross_line = false;   // 终点/横线标志
-
+    int64_t a = esp_timer_get_time();
+    int64_t b;
     // ---------- 1. 取一帧二值图（黑线=0，场地=255）----------
     if (!get_mask(&mask, LINE_MODE))
     {
+        b = esp_timer_get_time();
+        ESP_LOGE(TAG, "取图用时：%lld", b - a);
+        a = b;
         free_bw_image(&mask);      // 失败时 mask 里也可能已分配，统一释放
         s_noframe_cnt++;
         if (s_noframe_cnt >= IMG_NOFRAME_MAX)
@@ -344,10 +420,16 @@ int image_follow(void)
     }
     else
     {
+        b = esp_timer_get_time();
+        ESP_LOGE(TAG, "取图用时：%lld", b-a);
+        a = b;
         s_noframe_cnt = 0;
 
         // ---------- 2. 视觉：算出本帧误差 ----------
         bool found = image_get_line_error(&mask, &error, &curve, &cross_line);
+        b = esp_timer_get_time();
+        ESP_LOGE(TAG, "计算误差用时：%lld", b-a);
+        a = b;
         free_bw_image(&mask);      // mask->data 由 get_mask 内部 malloc，必须每帧释放
 
         // ---------- 3. 实测控制周期 dt（视觉帧率会抖，不能用固定值）----------
@@ -363,6 +445,8 @@ int image_follow(void)
         if (!found)
         {
             // ---------- 4. 丢线：保持 -> 原地搜索 -> 超时停车 ----------
+            led_set_rgb(255, 0, 0);                   // 丢线：板载 LED 亮红灯，便于调试观察
+
             s_integral = 0.0f;                        // 丢线期间不积分，防止饱和
             if (s_lost_start_us == 0) s_lost_start_us = now;
             int lost_ms = (int)((now - s_lost_start_us) / 1000);
@@ -374,21 +458,24 @@ int image_follow(void)
             else if (lost_ms < IMG_LOST_SEARCH_MS)
             {
                 // 按丢线前的偏差方向原地慢转找线：误差为正=线在右侧 -> 顺时针
-                if (s_last_error >= 0.0f)
+                if (s_last_error >= 0.0f){
                     motor_turn_plus_CW(IMG_SEARCH_SPEED);
-                else
+                }
+                else{
                     motor_turn_plus_CCW(IMG_SEARCH_SPEED);
+                }
             }
             else
             {
                 motor_stop();
-                ESP_LOGW(TAG, "丢线超过 %d ms，停车", IMG_LOST_SEARCH_MS);
+                ESP_LOGE(TAG, "丢线超过 %d ms，停车", IMG_LOST_SEARCH_MS);
                 state = IMAGE_FOLLOW_LOST;
             }
         }
         else
         {
             s_lost_start_us = 0;                      // 线回来了，清丢线计时
+            led_set_off();                            // 线回来了：熄灭红灯
 
             // ---------- 6. PID + 弯道减速 + 差速输出 ----------
             s_last_error = error;                     // 记录原始误差（丢线时定搜索方向）
@@ -397,8 +484,11 @@ int image_follow(void)
 
             float slow = 1.0f - IMG_K_SLOW * (fabsf(error) + fabsf(curve));
             float base = clampf(IMG_BASE_SPEED * slow, IMG_MIN_SPEED, IMG_BASE_SPEED);
-
+            b = esp_timer_get_time();
+            ESP_LOGE(TAG, "PID计算用时：%lld", b-a);
+            a = b;
             drive(base + steer, base - steer);
+
 
             // ---------- 7. 限频打印，便于调参 ----------
             s_frame_cnt++;
@@ -408,8 +498,7 @@ int image_follow(void)
                 ESP_LOGI(TAG, "err=%.3f curve=%.3f steer=%.3f L=%.3f R=%.3f dt=%.0fms",
                          error, curve, steer, s_last_left, s_last_right, dt * 1000.0f);
             }
-#endif
-            // }                                      // 恢复终点停车时，这里是 else 分支的结尾
+#endif                                     
         }
     }
 
@@ -436,6 +525,7 @@ int image_follow_stop(void)
             ESP_LOGE(TAG, "连续 %d 次取图失败，停车", s_noframe_cnt);
             state = IMAGE_FOLLOW_NO_FRAME;
         }
+
         // 偶发丢帧：不停车，电机保持上一轮 PWM
     }
     else
@@ -470,10 +560,10 @@ int image_follow_stop(void)
             /*else*/ if (lost_ms < IMG_LOST_SEARCH_MS)
             {
                 // 按丢线前的偏差方向原地慢转找线：误差为正=线在右侧 -> 顺时针
-                if (s_last_error >= 0.0f)
-                    motor_turn_plus_CW(IMG_SEARCH_SPEED);
-                else
-                    motor_turn_plus_CCW(IMG_SEARCH_SPEED);
+                //if (s_last_error >= 0.0f)
+                    //motor_turn_plus_CW(IMG_SEARCH_SPEED);
+                //else
+                    //motor_turn_plus_CCW(IMG_SEARCH_SPEED);
             }
             else
             {
@@ -505,7 +595,7 @@ int image_follow_stop(void)
             float slow = 1.0f - IMG_K_SLOW * (fabsf(error) + fabsf(curve));
             float base = clampf(IMG_BASE_SPEED * slow, IMG_MIN_SPEED, IMG_BASE_SPEED);
 
-            drive(base + steer, base - steer);
+            //drive(base + steer, base - steer);
 
             // ---------- 7. 限频打印，便于调参 ----------
             s_frame_cnt++;
@@ -524,6 +614,6 @@ int image_follow_stop(void)
     return state;
 }
 
-bool image_find_ball() {
-
+bool image_find_ball(int ball){
+    return true;
 }

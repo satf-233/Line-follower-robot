@@ -11,13 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "TEST_CAM";
-
-//#define CAPTURE_COUNT   3     /* 抓取并保存的帧数 */
-//#define CONNECT_RETRY   50    /* 等待摄像头连接的次数（每次 100ms，共约 5s） */
-
-#if 0  /* 使用 test_cam.c 作为入口时，此处注释掉，避免重复 app_main */
-
+static const char *TAG = "TEST_AVOID";
 // 等待按一下 BOOT 按键（低电平）后再启动，带简单消抖    
 static void wait_boot_press(void)
 {
@@ -39,9 +33,15 @@ static void wait_boot_press(void)
             stable = 0;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+
+    ESP_LOGI("BOOT", "Main program boot!");
 }
 
-void app_main(void) {
+void app_main()
+{
+    image_init();
+    motor_init();
+    avoid_init();
     /* 1. 挂载存储区（用于保存抓到的图像） */
     storage_load();
 
@@ -57,46 +57,13 @@ void app_main(void) {
         cam_cleanup();
         return;
     }
-
-    /* 打印当前分辨率 */
-    int w = 0, h = 0;
-    if (cam_get_resolution(&w, &h) == CAM_OK) {
-        ESP_LOGI(TAG, "分辨率: %d x %d", w, h);
-    }
-        RGBImage rgb = {0};
-        int ret = CAM_ERR_TIMEOUT;
-
-    /* 摄像头刚启动需要一点时间连接，超时则重试 */
-    for (int t = 0; t < CONNECT_RETRY; t++) {
-        ret = cam_capture_rgb(&rgb, 0 ,143,480,176,1000);
-        if (ret == CAM_OK) break;
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    free_rgb_image(&rgb);
-    
-    motor_init();
-    avoid_init();
-    lcd_init();
-    image_init();
-
     wait_boot_press();
 
-    motor_forward(0.1);
-    motor_stop();
-
-    while(1){
-        RGBImage a = {0};
-        cam_capture_rgb(&a,0,143,480,176,1000);
-        free_rgb_image(&a);
-        //image_follow(); 
-        //lcd_show_dist(avoid_measure_cm());
+    float dir = 114514;
+    while (dir > 10 || dir < 0)
+    {
+        image_follow();
+        dir = avoid_measure_cm();
     }
-
-    motor_stop();
-    cam_stop_stream();
-    cam_cleanup();
+    avoid_run_plus();
 }
-
-
-#endif

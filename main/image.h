@@ -12,11 +12,13 @@
 #include <stdbool.h>
 #include "camera_audio.h"   // BWImage 类型 / get_mask 等接口
 
-// ===== image_follow() 的返回状态 =====
+// ===== image_follow() / image_find_ball() 的返回状态 =====
 #define IMAGE_FOLLOW_OK        0   // 正常循迹中（含短暂丢线、偶发丢帧，电机未停）
 #define IMAGE_FOLLOW_LOST      1   // 丢线超时，已停车
 #define IMAGE_FOLLOW_STOP      2   // 检测到横线/终点，已停车
 #define IMAGE_FOLLOW_NO_FRAME  3   // 连续取图失败，已停车
+#define IMAGE_FIND_BALL_OK     4   // 正常找球/追球中
+#define IMAGE_FIND_BALL_DONE   5   // 超声波测得已贴近球(<10cm)，已停车，任务完成
 
 /**
  * 摄像头循迹初始化（上电后、进入循迹循环前调用一次）
@@ -37,6 +39,17 @@ int image_follow(void);
 int image_follow_stop(void);
 
 /**
+ * 找球主函数：识别指定颜色的球，转向并朝球前进，直到超声波测到贴近球(<10cm)后停车
+ * 与 image_follow 一样在主循环里反复调用，一次调用 = 一帧闭环（内部已带让出 CPU 的延时）
+ * @param ball  目标球颜色的取图模式：REDBALL_MODE(1) / BLUEBALL_MODE(2)，直接传给 get_mask
+ * @return IMAGE_FIND_BALL_OK    正常追球中（含短暂丢球、偶发丢帧，电机未停）
+ *         IMAGE_FIND_BALL_DONE  超声波 <10cm，已停车，任务完成（返回后主程序应退出循环）
+ *         IMAGE_FOLLOW_LOST     长时间找不到球（直行补盲区 + 原地搜索后仍无果），已停车
+ *         IMAGE_FOLLOW_NO_FRAME 连续取图失败，已停车
+ */
+bool image_find_ball(int ball);
+
+/**
  * 纯视觉函数：从二值图算出归一化横向偏差（不驱动电机，方便单独打印调试）
  * @param mask        输入二值图，黑线=0、场地=255（由 get_mask 提供）
  * @param error       输出：归一化横向偏差，范围 [-1,1]，正=黑线偏向画面右侧
@@ -44,8 +57,6 @@ int image_follow_stop(void);
  * @param cross_line  输出：是否检测到横线/终点线（可传 NULL）
  * @return true=本帧找到有效黑线（error 等有效），false=丢线（输出参数不更新）
  */
-
-bool image_find_ball(void);
 
 bool image_get_line_error(const BWImage *mask, float *error, float *curve, bool *cross_line);
 
