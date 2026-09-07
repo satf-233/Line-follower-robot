@@ -18,6 +18,7 @@ ESP32 端流程：get_mask() 得到 BWImage → wifi_stream_push_bw() 推到 /ma
 
 import argparse
 import time
+from collections import deque
 import http.client
 from urllib.parse import urlsplit
 
@@ -72,8 +73,7 @@ def main():
 
     cv2.namedWindow("BW Mask", cv2.WINDOW_NORMAL)
 
-    t0 = time.time()
-    n = 0
+    frame_times = deque()
     blank = None
 
     while True:
@@ -101,9 +101,13 @@ def main():
         # 若想白线黑底，取消下一行注释反相：
         # mask = 255 - mask
 
-        n += 1
-        dt = time.time() - t0
-        fps = n / dt if dt > 0 else 0.0
+        now = time.time()
+        frame_times.append(now)
+        while frame_times and now - frame_times[0] > 1.0:
+            frame_times.popleft()
+        fps = 0.0
+        if len(frame_times) >= 2:
+            fps = (len(frame_times) - 1) / (frame_times[-1] - frame_times[0])
         h, w = mask.shape
 
         disp = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)

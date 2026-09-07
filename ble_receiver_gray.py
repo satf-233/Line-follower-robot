@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ble_receiver_mask.py —— 电脑端 BLE 接收脚本
+ble_receiver_gray.py —— 电脑端 BLE 接收脚本
 连接 ESP32-S3 (ESP32S3-CAM)，接收 MJPEG 帧分片 -> 重组 -> OpenCV 显示。
 
 依赖安装:
     pip install bleak opencv-python numpy
 
 用法:
-    python ble_receiver_mask.py                    # 自动扫描并连接 ESP32S3-CAM
-    python ble_receiver_mask.py --addr XX:XX:...   # 按 MAC 地址直连（更快）
-    python ble_receiver_mask.py --save frame.jpg   # 额外保存第一帧到文件
-    python ble_receiver_mask.py --save-video ./videos  # 实时保存视频到指定文件夹
-    python ble_receiver_mask.py --no-mtu           # 禁用 MTU 协商（仅调试用）
+    python ble_receiver_gray.py                    # 自动扫描并连接 ESP32S3-CAM
+    python ble_receiver_gray.py --addr XX:XX:...   # 按 MAC 地址直连（更快）
+    python ble_receiver_gray.py --save frame.jpg   # 额外保存第一帧到文件
+    python ble_receiver_gray.py --save-video ./videos  # 实时保存视频到指定文件夹
+    python ble_receiver_gray.py --no-mtu           # 禁用 MTU 协商（仅调试用）
 
 按 q 退出。
 """
@@ -96,6 +96,13 @@ class FrameAssembler:
 
         return None
 
+    def create_trackbars(self):
+        # 灰度阈值滑条：与 ESP32 get_mask() LINEMODE2 的 GRAY_THRESH 对应，
+        # 在电脑上调好阈值后回填到 main/camera_audio.c 即可。
+        cv2.namedWindow("Trackbars", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Trackbars", 480, 120)
+        cv2.createTrackbar("Gray Thresh", "Trackbars", 128, 255, lambda x: None)
+
 def make_notification_cb(assembler, save_path, stats, video_dir=None):
     """构造 bleak 通知回调。"""
 
@@ -137,7 +144,15 @@ def make_notification_cb(assembler, save_path, stats, video_dir=None):
         cv2.putText(img, f"{len(frame)} B", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
+        # 读滑条阈值，转灰度并二值化：gray<阈值=黑线(0)，gray>=阈值=场地(255)，
+        # 与 ESP32 掩码约定一致（0=前景/黑线，255=背景/场地）。
+        thresh = cv2.getTrackbarPos("Gray Thresh", "Trackbars")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)   # 与 ESP32 灰度 LUT 同为 Rec.601
+        _, mask = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+
         cv2.imshow("Get_mask", img)      #显示原始图像
+        cv2.imshow("Gray", gray)         #显示灰度图
+        cv2.imshow("Mask", mask)         #显示二值掩码：黑线=黑、场地=白
         cv2.waitKey(3)                      #等待3ms，刷新图像显示
 
         # 保存视频到指定文件夹：按真实接收帧率建写入器，避免回放加速
@@ -208,6 +223,8 @@ async def main(args):
     async with BleakClient(addr, timeout=20.0) as client:
         print("[+] 已连接")
 
+        # 创建阈值滑条窗口（只创建一次，避免每帧重建导致滑块位置被重置）
+        assembler.create_trackbars()
 
         if not args.no_mtu:
             await negotiate_mtu(client)

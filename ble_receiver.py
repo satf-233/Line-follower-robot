@@ -20,6 +20,7 @@ import asyncio
 import argparse
 import sys
 import time
+from collections import deque
 
 import numpy as np
 import cv2
@@ -126,7 +127,9 @@ def make_notification_cb(assembler, save_path, stats):
         img = cv2.flip(img, -1)
 
         now = time.time()
-        stats["last_ts"] = now
+        stats["times"].append(now)
+        while stats["times"] and now - stats["times"][0] > 1.0:
+            stats["times"].popleft()
         stats["bytes"] += len(frame)
 
         if save_path and not stats["saved"]:
@@ -135,17 +138,14 @@ def make_notification_cb(assembler, save_path, stats):
             stats["saved"] = True
             print(f"[+] 已保存首帧到: {save_path}")
 
-        # 画 FPS / 帧大小
-        if stats["t0"] is not None:
-            dt = now - stats["t0"]
-            if dt > 0:
-                fps = stats["n"] / dt
-                cv2.putText(img, f"{fps:5.1f} FPS", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        # 实时 FPS：最近 1 秒滑动窗口内的平均帧率
+        fps = 0.0
+        if len(stats["times"]) >= 2:
+            fps = (len(stats["times"]) - 1) / (stats["times"][-1] - stats["times"][0])
+        cv2.putText(img, f"{fps:5.1f} FPS", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         cv2.putText(img, f"{len(frame)} B", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        stats["n"] += 1
 
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)#将BGR图相转换为HSV图像
         l_h = cv2.getTrackbarPos("L - H","Trackbars") 
@@ -201,7 +201,7 @@ async def find_device():
 
 async def main(args):
     assembler = FrameAssembler()
-    stats = {"n": 0, "bytes": 0, "t0": None, "last_ts": 0.0, "saved": False}
+    stats = {"bytes": 0, "saved": False, "times": deque()}
 
     addr = args.addr
     if not addr:
@@ -230,7 +230,6 @@ async def main(args):
             except Exception as e:
                 print(f"[!] 发送 START 失败（控制特征可能未启用）: {e}")
 
-        stats["t0"] = time.time()
         print("[*] 按 q 退出。")
         try:
             while True:

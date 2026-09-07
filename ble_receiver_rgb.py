@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ble_receiver_mask.py —— 电脑端 BLE 接收脚本
+ble_receiver_rgb.py —— 电脑端 BLE 接收脚本
 连接 ESP32-S3 (ESP32S3-CAM)，接收 MJPEG 帧分片 -> 重组 -> OpenCV 显示。
 
 依赖安装:
     pip install bleak opencv-python numpy
 
 用法:
-    python ble_receiver_mask.py                    # 自动扫描并连接 ESP32S3-CAM
-    python ble_receiver_mask.py --addr XX:XX:...   # 按 MAC 地址直连（更快）
-    python ble_receiver_mask.py --save frame.jpg   # 额外保存第一帧到文件
-    python ble_receiver_mask.py --save-video ./videos  # 实时保存视频到指定文件夹
-    python ble_receiver_mask.py --no-mtu           # 禁用 MTU 协商（仅调试用）
+    python ble_receiver_rgb.py                    # 自动扫描并连接 ESP32S3-CAM
+    python ble_receiver_rgb.py --addr XX:XX:...   # 按 MAC 地址直连（更快）
+    python ble_receiver_rgb.py --save frame.jpg   # 额外保存第一帧到文件
+    python ble_receiver_rgb.py --no-mtu           # 禁用 MTU 协商（仅调试用）
 
 按 q 退出。
 """
 
 import asyncio
 import argparse
-import os
 import sys
 import time
 from collections import deque
@@ -96,7 +94,20 @@ class FrameAssembler:
 
         return None
 
-def make_notification_cb(assembler, save_path, stats, video_dir=None):
+    def create_trackbars(self):#定义创建滑条的函数
+        # WINDOW_NORMAL + resizeWindow 固定窗口大小，避免滑条挤在一起/窗口异常
+        cv2.namedWindow("Trackbars", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Trackbars", 640, 320)
+        cv2.createTrackbar("L - R", "Trackbars",0,255,lambda x: None)
+        cv2.createTrackbar("L - G", "Trackbars",0,255,lambda x: None)
+        cv2.createTrackbar("L - B", "Trackbars",0,255,lambda x: None)
+        cv2.createTrackbar("U - R", "Trackbars",255,255,lambda x: None)
+        cv2.createTrackbar("U - G", "Trackbars",255,255,lambda x: None)
+        cv2.createTrackbar("U - B", "Trackbars",255,255,lambda x: None)
+
+
+
+def make_notification_cb(assembler, save_path, stats):
     """构造 bleak 通知回调。"""
 
     def on_notify(_sender, data: bytearray):
@@ -137,27 +148,23 @@ def make_notification_cb(assembler, save_path, stats, video_dir=None):
         cv2.putText(img, f"{len(frame)} B", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        cv2.imshow("Get_mask", img)      #显示原始图像
+        l_r = cv2.getTrackbarPos("L - R","Trackbars") 
+        l_g = cv2.getTrackbarPos("L - G","Trackbars") 
+        l_b = cv2.getTrackbarPos("L - B","Trackbars") 
+        u_r = cv2.getTrackbarPos("U - R","Trackbars") 
+        u_g = cv2.getTrackbarPos("U - G","Trackbars") 
+        u_b = cv2.getTrackbarPos("U - B","Trackbars") 
+        lower = np.array([l_r, l_g, l_b])
+        upper = np.array([u_r, u_g, u_b])
+        in_range = cv2.inRange(img, lower, upper)   #根据阈值创建掩码：范围内=255(白)
+        mask = cv2.bitwise_not(in_range)            #反转：范围内=0(黑)，范围外=255(白)
+        result = cv2.bitwise_and(img, img, mask=mask)      # result 用反转掩码：线=黑、背景=原色
+
+        cv2.imshow("Original", img)      #显示原始图像
+        cv2.imshow("Mask", mask)         #显示反转掩码：线=黑、背景=白
+        cv2.imshow("Result", result)     #显示范围内区域
         cv2.waitKey(3)                      #等待3ms，刷新图像显示
-
-        # 保存视频到指定文件夹：按真实接收帧率建写入器，避免回放加速
-        if video_dir:
-            if stats["writer"] is None and fps > 0 and len(stats["times"]) >= 4:
-                video_fps = max(1.0, min(fps, 60.0))
-                os.makedirs(video_dir, exist_ok=True)
-                h, w = img.shape[:2]
-                video_path = os.path.join(
-                    video_dir, time.strftime("%Y%m%d_%H%M%S") + ".mp4")
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                stats["writer"] = cv2.VideoWriter(video_path, fourcc, video_fps, (w, h))
-                if not stats["writer"].isOpened():
-                    print(f"[!] 视频写入器创建失败: {video_path}")
-                    stats["writer"] = None
-                else:
-                    print(f"[+] 开始保存视频到: {video_path} (约 {video_fps:.1f} FPS)")
-            if stats["writer"] is not None:
-                stats["writer"].write(img)
-
+        
     return on_notify
 
 
@@ -195,7 +202,7 @@ async def find_device():
 
 async def main(args):
     assembler = FrameAssembler()
-    stats = {"bytes": 0, "saved": False, "times": deque(), "writer": None}
+    stats = {"bytes": 0, "saved": False, "times": deque()}
 
     addr = args.addr
     if not addr:
@@ -208,12 +215,14 @@ async def main(args):
     async with BleakClient(addr, timeout=20.0) as client:
         print("[+] 已连接")
 
+        # 调试滑条窗口只创建一次；放到回调外，避免每帧重建导致滑块位置被重置
+        assembler.create_trackbars()
 
         if not args.no_mtu:
             await negotiate_mtu(client)
 
         # 订阅帧数据特征通知
-        cb = make_notification_cb(assembler, args.save, stats, args.save_video)
+        cb = make_notification_cb(assembler, args.save, stats)
         await client.start_notify(FRAME_CHAR_UUID, cb)
         print("[+] 已订阅帧通知，等待图像...")
 
@@ -234,9 +243,6 @@ async def main(args):
                     break
         finally:
             await client.stop_notify(FRAME_CHAR_UUID)
-            if stats["writer"] is not None:
-                stats["writer"].release()
-                print("[+] 视频已保存并释放")
             cv2.destroyAllWindows()
 
     print(f"[*] 共收到 {assembler.frames_received} 帧, "
@@ -248,7 +254,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="ESP32-S3 BLE MJPEG 接收显示")
     ap.add_argument("--addr", help="设备 MAC 地址，如 AA:BB:CC:DD:EE:FF")
     ap.add_argument("--save", help="保存首帧到指定路径（如 frame.jpg）")
-    ap.add_argument("--save-video", help="保存视频到指定文件夹（如 ./videos），自动以时间戳命名 .mp4")
     ap.add_argument("--start", action="store_true", help="连接后发送 START 命令")
     ap.add_argument("--no-mtu", action="store_true", help="不协商 MTU")
     a = ap.parse_args()
