@@ -548,29 +548,10 @@ int image_follow_stop(void)
 
         if (!found)
         {
-            // ---------- 4. 丢线：保持 -> 原地搜索 -> 超时停车 ----------
-            s_integral = 0.0f;                        // 丢线期间不积分，防止饱和
-            if (s_lost_start_us == 0) s_lost_start_us = now;
-            int lost_ms = (int)((now - s_lost_start_us) / 1000);
-
-            //if (lost_ms < IMG_LOST_HOLD_MS)
-            //{
-                // 短暂丢线：保持上一轮动作，等线自己回到视野，不做任何操作
-            //}
-            /*else*/ if (lost_ms < IMG_LOST_SEARCH_MS)
-            {
-                // 按丢线前的偏差方向原地慢转找线：误差为正=线在右侧 -> 顺时针
-                //if (s_last_error >= 0.0f)
-                    //motor_turn_plus_CW(IMG_SEARCH_SPEED);
-                //else
-                    //motor_turn_plus_CCW(IMG_SEARCH_SPEED);
-            }
-            else
-            {
-                motor_stop();
-                ESP_LOGW(TAG, "丢线超过 %d ms，停车", IMG_LOST_SEARCH_MS);
-                state = IMAGE_FOLLOW_LOST;
-            }
+            // ---------- 4. 丢线：立即停车并请求停止循迹（不再原地搜索/超时停车）----------
+            motor_stop();
+            ESP_LOGI(TAG, "检测到丢线，请求停车");
+            state = IMAGE_FOLLOW_STOP;
         }
         else
         {
@@ -595,7 +576,7 @@ int image_follow_stop(void)
             float slow = 1.0f - IMG_K_SLOW * (fabsf(error) + fabsf(curve));
             float base = clampf(IMG_BASE_SPEED * slow, IMG_MIN_SPEED, IMG_BASE_SPEED);
 
-            //drive(base + steer, base - steer);
+            drive(base + steer, base - steer);
 
             // ---------- 7. 限频打印，便于调参 ----------
             s_frame_cnt++;
@@ -614,6 +595,32 @@ int image_follow_stop(void)
     return state;
 }
 
-bool image_find_ball(int ball){
+bool image_find_line(void)
+{
+    BWImage mask = {0};
+    float   error = 0.0f;
+
+    // 1. 取一帧二值图（黑线=0，场地=255），按指定行区间 [143, 0) 裁剪
+    if (!get_mask_pro(&mask, 143, 0, LINE_MODE2))
+    {
+        free_bw_image(&mask);
+        return false;            // 未取到图，无法判断方向
+    }
+
+    // 2. 复用 image_get_line_error 求归一化横向偏差 error（内部含丢线判断）
+    bool found = image_get_line_error(&mask, &error, NULL, NULL);
+    free_bw_image(&mask);        // mask->data 由 get_mask_pro 内部 malloc，必须每帧释放
+
+    if (!found)
+    {
+        return false;            // 丢线：本帧没有找到有效黑线
+    }
+
+    // 3. error 为归一化横向偏差 [-1,1]：
+    //    >0 黑线偏向画面右侧 -> false；<0 黑线偏向画面左侧 -> true；==0 居中 -> false
+    return (error < 0.0f);
+}
+
+bool image_find_ball(void){
     return true;
 }

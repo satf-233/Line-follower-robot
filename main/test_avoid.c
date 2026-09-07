@@ -66,4 +66,10 @@ void app_main()
         dir = avoid_measure_cm();
     }
     avoid_run_plus();
+    int state = IMAGE_FOLLOW_OK;
+    while(state != IMAGE_FOLLOW_STOP){
+        state = image_follow_stop()
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+    motor_stop();
 }

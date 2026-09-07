@@ -1,4 +1,5 @@
 #include "avoid.h"
+#include "image.h"
 #include "pins.h"
 #include "motor.h"
 #include "lcd.h"
@@ -324,8 +325,12 @@ bool avoid_run_plus(){
     // lcd_show_dist(avoid_measure_cm());
     // int sense_count = 0;
     Move(RIGHT_MOVE);
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    motor_stop();
+    while(1){
+        if(image_find_line()){
+            motor_stop();
+            return true;
+        }
+    }
     // while(1){
     //     vTaskDelay(pdMS_TO_TICKS(findway_turn_time));
     //     //每100ms刷新一次距离数据
@@ -341,5 +346,4 @@ bool avoid_run_plus(){
     //         return true;
     //     }
     // }
-    return 0;
 }
