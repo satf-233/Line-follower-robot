@@ -33,6 +33,8 @@ bool avoid_run_plus();
 //将来合并到motor.c当中
 void Move(int type);
 void Move_Fire(int type);
+void mini_turn_error(float err_percent);
+void mini_turn_direction(int dir);
 
 #endif // AVOID_H
 

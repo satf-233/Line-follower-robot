@@ -26,7 +26,10 @@
 #define AVOID_MIN_CM          (2.0f)
 #define AVOID_MAX_CM          (400.0f)
 
-
+// 蠕动时原地旋转速度
+#define mini_turn_speed 0.14f
+// 蠕动时原地旋转时间// 单位ms
+#define mini_turn_time 50
 
 void avoid_init(void)
 {
@@ -160,6 +163,27 @@ void nonline_forward(){
     motorB_stop();
 }
 
+void mini_turn_error(float err_percent){
+    if (err_percent > 0)
+    {
+        motor_turn_plus_CCW(mini_turn_speed);
+        vTaskDelay(pdMS_TO_TICKS(mini_turn_time));
+        motor_stop();
+    }
+    else
+    {
+        motor_turn_plus_CW(mini_turn_speed);
+        vTaskDelay(pdMS_TO_TICKS(mini_turn_time));
+        motor_stop();
+    }
+}
+
+void mini_turn_direction(int dir){
+    motor_turn_plus(dir, mini_turn_speed); // 原地旋转
+    vTaskDelay(pdMS_TO_TICKS(mini_turn_time));
+    motor_stop();
+}
+
 //每次停止后，延迟1000ms使电机完全停下俩
 #define STOP_DELAY 1000
 //#define findway_thre 25 //检测到无障碍物的距离阈值(改)
@@ -244,9 +268,7 @@ bool avoid_run_plus(){
     while (wrong_count < 5)
     {
         ESP_LOGI("AVOID", "Avoiding");
-        motor_turn_plus(dir, 0.14); // 原地旋转
-        vTaskDelay(pdMS_TO_TICKS(50));
-        motor_stop();
+        mini_turn_direction(dir);
         vTaskDelay(pdMS_TO_TICKS(100));
         dist = avoid_measure_cm();
         vTaskDelay(pdMS_TO_TICKS(100));
