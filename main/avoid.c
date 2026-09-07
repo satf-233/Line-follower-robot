@@ -108,6 +108,7 @@ float avoid_measure_cm(void)
 #define speed_D 0.116f
 #define fire_para 1.85f
 #define fire_time 100
+#define REACQUIRE_LINE_TIMEOUT_MS 1500   // 右移找回线超时(ms)
 
 //向左和向右平移函数
 void Move(int type){ 
@@ -244,7 +245,7 @@ bool avoid_run_plus(){
     {
         ESP_LOGI("AVOID", "Avoiding");
         motor_turn_plus(dir, 0.14); // 原地旋转
-        vTaskDelay(pdMS_TO_TICKS(75));
+        vTaskDelay(pdMS_TO_TICKS(50));
         motor_stop();
         vTaskDelay(pdMS_TO_TICKS(100));
         dist = avoid_measure_cm();
@@ -325,10 +326,21 @@ bool avoid_run_plus(){
     // lcd_show_dist(avoid_measure_cm());
     // int sense_count = 0;
     Move(RIGHT_MOVE);
-    while(1){
-        if(image_find_line()){
+    int64_t reacquire_start_us = esp_timer_get_time();
+    while (1)
+    {
+        if (image_find_line())
+        {
             motor_stop();
             return true;
+        }
+
+        // 兜底：右移找回线超过 1500ms 仍未回到线中央，强停避免无限右移冲线
+        if ((esp_timer_get_time() - reacquire_start_us) > ((int64_t)REACQUIRE_LINE_TIMEOUT_MS * 1000))
+        {
+            motor_stop();
+            ESP_LOGW("AVOID", "Reacquire line timeout, abort");
+            return false;
         }
     }
     // while(1){
