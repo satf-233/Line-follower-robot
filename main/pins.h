@@ -5,10 +5,10 @@
 
 // ===== 四路红外传感器IR =====
 //看向前进方向，从左往右编号
-#define IR1 GPIO_NUM_19
-#define IR2 GPIO_NUM_20
-#define IR3 GPIO_NUM_21
-#define IR4 GPIO_NUM_41
+//#define IR1 GPIO_NUM_19
+//#define IR2 GPIO_NUM_20
+//#define IR3 GPIO_NUM_21
+//#define IR4 GPIO_NUM_41
 
 // ===== LED（WS2812）=====
 #define LED_GPIO        GPIO_NUM_38
@@ -46,10 +46,10 @@
 #define SERVO2_GPIO     GPIO_NUM_45
 
 // ===== 液晶屏（ST7735S，SPI 串口 7Pin）=====
-#define LCD_RST GPIO_NUM_43
-#define LCD_DC  GPIO_NUM_44
-#define LCD_SDI GPIO_NUM_40
-#define LCD_SCK GPIO_NUM_39
+#define LCD_RST GPIO_NUM_39
+#define LCD_DC  GPIO_NUM_40
+#define LCD_SDI GPIO_NUM_2
+#define LCD_SCK GPIO_NUM_1
 
 // ===== 超声波测距传感器（HC-SR04）=====
 #define TRIG GPIO_NUM_5

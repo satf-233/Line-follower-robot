@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include "camera_audio.h"   // BWImage 类型 / get_mask 等接口
+#include "mask_stream.h"
 
 // ===== image_follow() 的返回状态 =====
 #define IMAGE_FOLLOW_OK        0   // 正常循迹中（含短暂丢线、偶发丢帧，电机未停）
@@ -44,6 +45,8 @@ int image_follow_stop(void);
  * @param cross_line  输出：是否检测到横线/终点线（可传 NULL）
  * @return true=本帧找到有效黑线（error 等有效），false=丢线（输出参数不更新）
  */
+
+bool image_find_line(void);
 
 bool image_find_ball(void);
 

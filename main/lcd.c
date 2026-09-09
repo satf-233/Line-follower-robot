@@ -10,10 +10,8 @@
 #include "pins.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -291,6 +289,9 @@ static const uint8_t font_colon[16] = {
 static const uint8_t font_minus[16] = {
     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     0x00,0x7E,0x7E,0x00,0x00,0x00,0x00,0x00 };
+static const uint8_t font_point[16] = {
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x3C,0x3C,0x3C,0x3C,0x00};
 static const uint8_t font_space[16] = { 0 };
 
 // 取得某个字符对应的字模
@@ -312,6 +313,7 @@ static const uint8_t *font_glyph(char c)
         case 't':  return font_t;
         case ':':  return font_colon;
         case '-':  return font_minus;
+        case '.':  return font_point;
         default:   return font_space;
     }
 }
@@ -480,50 +482,45 @@ void lcd_show_dist(float dist)
     lcd_draw_text_centered(LCD_TEXT_Y, buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
 }
 
-// 显示三台电机(A/B/D)的累计脉冲数，各显示三位整数(0~999)，自上而下分布在 Dist 下方
-// void lcd_show_speed()
-// {
-//     // TODO: 编码器尚未实现，暂以 0 占位；待实现 encoder_get_rpm() 后恢复真实转速
-//     float a = 0;
-//     float b = 0;
-//     float d = 0;
-//     const float vals[3] = { a, b, d };
-//     const uint16_t ys[3]  = { LCD_TEXT_Y_A, LCD_TEXT_Y_B, LCD_TEXT_Y_D };
-//     char buf[7];
+void lcd_show_error(float err){
+    char buf[16];
 
-//     for (int i = 0; i < 3; i++) {
-//         int v = (int)vals[i];
-//         v %= 1000;                 // 只取三位 0~999
+    if (err < 0) {
+        buf[0] = '-';
+        err = -err;
+    } 
+    else {
+        buf[0] = ' ';
+    }
+    int v = (int)(err * 1000);
+    if (v > 999) v = 999;
+    buf[1] = '0';
+    buf[2] = '.';
+    buf[3] = (char)('0'+(v/100));
+    buf[4] = (char)('0'+((v % 100)/10));
+    buf[5] = (char)('0'+ (v % 10));
+    buf[6] = '\0';
 
-//         // 先清整行，避免上次更长/更短的数字残留（防鬼影）
-//         lcd_fill_rect(0, ys[i], LCD_H_RES, FONT_H * LCD_TEXT_SCALE, LCD_COLOR_BG);
+    lcd_draw_text_centered(65, buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
+}
 
-//         //显示的内容
-//         if (i == 0) {
-//             buf[0] = 'A';
-//         }
-//         if (i == 1){
-//             buf[0] = 'B';
-//         }
-//         if (i == 2) {
-//             buf[0] = 'D';
-//         } 
+void lcd_show_tri_error(float err, int mode){
+    char buf[16];
+    if (err < 0) {
+        buf[0] = '-';
+        err = -err;
+    } 
+    else {
+        buf[0] = ' ';
+    }
+    int v = (int)(err * 1000);
+    if (v > 999) v = 999;
+    buf[1] = '0';
+    buf[2] = '.';
+    buf[3] = (char)('0'+(v/100));
+    buf[4] = (char)('0'+((v % 100)/10));
+    buf[5] = (char)('0'+ (v % 10));
+    buf[6] = '\0';
 
-//         buf[1] = ':'; 
-
-//         if (v < 0) {
-//             buf[2] = '-';
-//         }
-//         else {
-//             buf[2] = ' ';
-//             v = -v;
-//         }
-
-//         buf[3] = (char)('0' + v / 100);
-//         buf[4] = (char)('0' + (v / 10) % 10);
-//         buf[5] = (char)('0' + v % 10);
-//         buf[6] = '\0';
-
-//         lcd_draw_text_centered(ys[i], buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
-//     }
-//}
+    lcd_draw_text_centered(LCD_TEXT_Y + mode * LCD_LINE_STRIDE, buf, LCD_TEXT_SCALE, LCD_COLOR_FG, LCD_COLOR_BG);
+}

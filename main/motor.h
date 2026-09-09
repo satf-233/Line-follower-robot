@@ -19,7 +19,9 @@ void motorD_stop(void);
 // 封装好后的控制函数
 // 前进 / 后退（duty：占空比 0.0 ~ 1.0，用于控制速度，0为停止，1为全速）
 void motor_forward(float duty);
+void motor_forward_new(float duty);
 void motor_backward(float duty);
+void motor_backward_new(float duty);
 // 左转 / 右转（duty：占空比 0.0 ~ 1.0，用于控制速度，0为停止，1为全速）
 void motor_turn_left(float duty, float kp);
 void motor_turn_right(float duty, float kp);
@@ -29,6 +31,8 @@ void motor_turn(float speed_coe);
 // 原地旋转
 void motor_turn_plus_CW(float duty);
 void motor_turn_plus_CCW(float duty);
+
+void motor_turn_plus(int dir, float duty);
 /*
     不建议通过类似motor_forward(0)的方式来使驱动轮停止运转
     使用stop类函数可以让代码可读性更佳，并且易于查找

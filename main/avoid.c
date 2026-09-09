@@ -1,4 +1,5 @@
 #include "avoid.h"
+#include "image.h"
 #include "pins.h"
 #include "motor.h"
 #include "lcd.h"
@@ -7,6 +8,7 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
+#include "esp_log.h"
 
 // ================================================================
 // HC-SR04 超声波测距（TRIG / ECHO）
@@ -24,7 +26,10 @@
 #define AVOID_MIN_CM          (2.0f)
 #define AVOID_MAX_CM          (400.0f)
 
-
+// 蠕动时原地旋转速度
+#define mini_turn_speed 0.14f
+// 蠕动时原地旋转时间// 单位ms
+#define mini_turn_time 50
 
 void avoid_init(void)
 {
@@ -48,6 +53,8 @@ void avoid_init(void)
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&echo);
+
+    ESP_LOGI("AVOID", "Avoid init success!");
 }
 
 float avoid_measure_cm(void)
@@ -58,8 +65,12 @@ float avoid_measure_cm(void)
     gpio_set_level(TRIG, 0);
 
     // 等 ECHO 从低变高（发射时刻）；一直不变高则判为无回波
+    // 必须加超时：前方全空 / 擦墙角等收不到回波时 ECHO 不上跳，死等会卡死整个任务
+    int64_t t0 = esp_timer_get_time();
     while (gpio_get_level(ECHO) == 0) {
-        //等待，不做处理
+        if (esp_timer_get_time() - t0 > 50000) {   // 50ms 等不到上升沿 -> 无回波
+            return AVOID_NO_ECHO_CM;               // -1.0f，见 avoid.h
+        }
     }
     int64_t start = esp_timer_get_time();
 
@@ -100,6 +111,7 @@ float avoid_measure_cm(void)
 #define speed_D 0.116f
 #define fire_para 1.85f
 #define fire_time 100
+#define REACQUIRE_LINE_TIMEOUT_MS 1500   // 右移找回线超时(ms)
 
 //向左和向右平移函数
 void Move(int type){ 
@@ -151,6 +163,27 @@ void nonline_forward(){
     motorB_stop();
 }
 
+void mini_turn_error(float err_percent){//ccx
+    if (err_percent > 0)
+    {
+        motor_turn_plus_CCW(mini_turn_speed);
+        vTaskDelay(pdMS_TO_TICKS(mini_turn_time));
+        motor_stop();
+    }
+    else
+    {
+        motor_turn_plus_CW(mini_turn_speed);
+        vTaskDelay(pdMS_TO_TICKS(mini_turn_time));
+        motor_stop();
+    }
+}
+
+void mini_turn_direction(int dir){
+    motor_turn_plus(dir, mini_turn_speed); // 原地旋转
+    vTaskDelay(pdMS_TO_TICKS(mini_turn_time));
+    motor_stop();
+}
+
 //每次停止后，延迟1000ms使电机完全停下俩
 #define STOP_DELAY 1000
 //#define findway_thre 25 //检测到无障碍物的距离阈值(改)
@@ -169,7 +202,7 @@ bool avoid_run(){
     //向左平移起步点火  
     Move_Fire(LEFT_MOVE);
     Move(LEFT_MOVE);
-    lcd_show_dist(avoid_measure_cm());
+    // lcd_show_dist(avoid_measure_cm());
     float dist = 0;
     while(avoid_state == 1)
     {
@@ -177,7 +210,7 @@ bool avoid_run(){
         //若超声波检测得到前方没有障碍，则进入找回状态
         vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
         dist = avoid_measure_cm();//用时1ms
-        lcd_show_dist (dist);
+        // lcd_show_dist (dist);
         if (dist < 0) 
         {
             //先保持平移运动500ms，保持距离显示刷新率不变
@@ -194,7 +227,7 @@ bool avoid_run(){
     nonline_forward();
     while (forward_count < 15)
     {
-        lcd_show_dist(avoid_measure_cm());
+        // lcd_show_dist(avoid_measure_cm());
         vTaskDelay(pdMS_TO_TICKS(forward_time));
         forward_count++;
     }
@@ -203,7 +236,7 @@ bool avoid_run(){
 
     //再向右平移
     Move_Fire(RIGHT_MOVE); //100ms
-    lcd_show_dist(avoid_measure_cm());
+    // lcd_show_dist(avoid_measure_cm());
     int sense_count = 0;
     Move(RIGHT_MOVE);
     while(1){
@@ -211,14 +244,140 @@ bool avoid_run(){
         //每100ms刷新一次距离数据
         if (sense_count > 100) {
             sense_count = 0;
-            lcd_show_dist(avoid_measure_cm()); 
+            // lcd_show_dist(avoid_measure_cm()); 
         }sense_count++;
         //读取红外传感器电平
         //如果传感器接受到黑色信息，就返回1（算法待优化）
-        if (!(gpio_get_level(IR1)&gpio_get_level(IR2)&gpio_get_level(IR3)&gpio_get_level(IR4))){
+        // if (!(gpio_get_level(IR1)&gpio_get_level(IR2)&gpio_get_level(IR3)&gpio_get_level(IR4))){
             //motor_stop();
             //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
             return true;
+        // }
+    }
+}
+
+// 摄像头循线特供避障
+bool avoid_run_plus(){
+    // 第一步变为调整姿态，因为摄像头循线不易达成完全沿路，容易在进入avoid_run_plus时小车朝向不对
+    ESP_LOGI("AVOID", "Start avoid1!");
+    float dist = avoid_measure_cm();
+    float last_dist = dist;
+    int dir = 1; // 旋转方向，默认先顺时针
+    int wrong_count = 0; // 换方向次数
+    ESP_LOGI("AVOID", "Start avoid2!");
+    while (wrong_count < 5)
+    {
+        ESP_LOGI("AVOID", "Avoiding");
+        mini_turn_direction(dir);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        dist = avoid_measure_cm();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (dist < 0) // 无回波/超量程：这个朝向没"看到"障碍，视为方向错误，换方向
+        {
+            last_dist = dist;
+            dir = 0 - dir;
+            wrong_count++;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (last_dist < 0)
+        {
+            // 恢复真实读数后的第一轮：上一轮无回波把比较基准污染成了负数，
+            // 任何正数跟 -1 比都会被判成"变远"而误翻转（"距离变短仍换方向"的根因），
+            // 因此只重建基准，不做方向判断，让小车继续沿当前方向转
+            last_dist = dist;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (dist < last_dist) // 旋转后dist变小，说明方向正确，需要继续朝这个方向旋转
+        {
+            last_dist = dist;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        else // 旋转后dist变大，说明方向错误，需要换方向
+        {
+            last_dist = dist;
+            dir = 0 - dir;
+            wrong_count++;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
         }
     }
+    
+    //初始为绕行状态
+    int avoid_state = 1;
+
+    //向左平移起步点火  
+    Move_Fire(LEFT_MOVE);
+    Move(LEFT_MOVE);
+    // lcd_show_dist(avoid_measure_cm());
+
+    while(avoid_state == 1)
+    {
+        //绕行状态，每轮时间约为100ms
+        //若超声波检测得到前方没有障碍，则进入找回状态
+        vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
+        dist = avoid_measure_cm();//用时1ms
+        // lcd_show_dist (dist);
+        if (dist < 0) 
+        {
+            //先保持平移运动500ms，保持距离显示刷新率不变
+            avoid_state = 2;
+            vTaskDelay(pdMS_TO_TICKS(pass_turn_time));
+            // lcd_show_dist (avoid_measure_cm());
+            //motor_stop();
+            //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
+        }  
+    }
+    //直行段
+    //大概率要先点火，然后保持，沿用上面的思路走5个循环，一次100ms
+    int forward_count = 0;
+    nonline_forward();
+    while (forward_count < 15)
+    {
+        // lcd_show_dist(avoid_measure_cm());
+        vTaskDelay(pdMS_TO_TICKS(forward_time));
+        forward_count++;
+    }
+    //motor_stop();
+    //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
+
+    //再向右平移
+    Move_Fire(RIGHT_MOVE); //100ms
+    // lcd_show_dist(avoid_measure_cm());
+    // int sense_count = 0;
+    Move(RIGHT_MOVE);
+    int64_t reacquire_start_us = esp_timer_get_time();
+    while (1)
+    {
+        if (image_find_line())
+        {
+            motor_stop();
+            return true;
+        }
+
+        // 兜底：右移找回线超过 1500ms 仍未回到线中央，强停避免无限右移冲线
+        if ((esp_timer_get_time() - reacquire_start_us) > ((int64_t)REACQUIRE_LINE_TIMEOUT_MS * 1000))
+        {
+            motor_stop();
+            ESP_LOGW("AVOID", "Reacquire line timeout, abort");
+            return false;
+        }
+    }
+    // while(1){
+    //     vTaskDelay(pdMS_TO_TICKS(findway_turn_time));
+    //     //每100ms刷新一次距离数据
+    //     if (sense_count > 100) {
+    //         sense_count = 0;
+    //         lcd_show_dist(avoid_measure_cm()); 
+    //     }sense_count++;
+    //     //读取红外传感器电平
+    //     //如果传感器接受到黑色信息，就返回1（算法待优化）
+    //     if (!(gpio_get_level(IR1)&gpio_get_level(IR2)&gpio_get_level(IR3)&gpio_get_level(IR4))){
+    //         //motor_stop();
+    //         //vTaskDelay(pdMS_TO_TICKS(STOP_DELAY));
+    //         return true;
+    //     }
+    // }
 }

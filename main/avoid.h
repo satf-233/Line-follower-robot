@@ -23,14 +23,18 @@ float avoid_measure_cm(void);
 /*                           ===== 执行避障程序 =====
     避障逻辑：测距小于进入阈值后，主程序状态切换为避障状态，避障函数内部进入绕行状态，小车
     向左平移，直到测距大于退出阈值后，避障函数内部进入找回状态，小车先向前移动一段距离，再
-    向右平移，当红外传感器电平出现0（检测到黑色）时，返回true，主程序切换为循迹状态。
+    向右平移。
 
-    TO DO: 优化返回true的逻辑，例如增加防抖：连续n次检测到黑色时返回true */ 
+    注意：避障结束条件（回到线上）暂时留空（avoid.c 内 TODO），当前进入末段循环后不会
+    退出——调用方需自行安排超时保护，待实现后再用返回值切换回循迹状态。 */
 bool avoid_run();
+bool avoid_run_plus();
 
 //将来合并到motor.c当中
 void Move(int type);
 void Move_Fire(int type);
+void mini_turn_error(float err_percent);
+void mini_turn_direction(int dir);
 
 #endif // AVOID_H
 

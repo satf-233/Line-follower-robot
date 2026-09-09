@@ -9,6 +9,12 @@ idf_component_register(SRCS
 "camera_audio.c"
 "start.c"
 "test_WIFI.c"
+"test_thres.c"
+"test_mask.c"
+"ball.c"
+"test_ball.c"
+"mask_stream.c"
+"test_ball_noWIFI.c"
 
 INCLUDE_DIRS "."
 REQUIRES

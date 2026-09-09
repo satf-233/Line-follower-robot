@@ -2,7 +2,6 @@
 #include "motor.h"
 #include "avoid.h"
 #include "lcd.h"
-#include "follow_brain.h"
 #include "pins.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -37,16 +36,5 @@ static void wait_boot_press(void)
 
 void start(void)
 {    
-    motor_init();
-    ir_init();   // 先初始化，follow() 才能读到电平
-    lcd_init();  // 液晶屏幕初始化  
-    avoid_init();
-
     wait_boot_press();   // 等按一下 BOOT 再运行
-
-    double speed = 0.16;
-    motor_forward(speed);
-    follow();
-    avoid_run();
-    follow_to_stop();
 }

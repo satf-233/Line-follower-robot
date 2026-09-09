@@ -129,120 +129,66 @@ static esp_ble_adv_params_t adv_params = {
 typedef struct {
     /**
      * @brief BLE 上下文是否已初始化
-     * 
-     * - true: 已经完成初始化（GATT server 已注册，服务已创建）
-     * - false: 尚未初始化或初始化失败
-     * 用于防止重复初始化或在未初始化时执行操作
      */
     bool            initialized;
     
     /**
      * @brief BLE 连接状态标志
-     * 
-     * - true: 已有客户端（如手机 App）成功连接到本设备
-     * - false: 没有活动连接
-     * 用于控制是否允许发送数据（只有连接成功后才能发送）
      */
     bool            connected;
     
     /**
      * @brief 通知（Notification）是否已使能
-     * 
-     * - true: 客户端已订阅特征值通知（写入 CCCD 描述符）
-     * - false: 客户端未订阅
-     * 只有为 true 时，设备才能主动通过 notify 向客户端推送数据（如图像帧）
      */
     bool            notify_enabled;
     
     /**
      * @brief 当前连接的 MTU（Maximum Transmission Unit）大小
-     * 
-     * 表示 BLE 连接中单个数据包能传输的最大字节数
-     * 默认通常为 23 字节（ATT MTU），经过 MTU 协商后可增大到 512 字节左右
-     * 用于分包发送大数据时计算每包的数据长度
      */
     uint16_t        mtu;
     
     /**
      * @brief BLE 连接 ID
-     * 
-     * 由 ESP-IDF 分配的唯一连接标识符
-     * 用于在多个连接（若支持）或事件回调中区分不同的连接
-     * 在连接建立时获得，断开连接后可能被复用
      */
     uint16_t        conn_id;
     
     /**
      * @brief GATT 接口句柄（GATT Interface Handle）
-     * 
-     * ESP-IDF 中 GATT 服务器的接口标识
-     * 在注册 GATT 服务时由系统分配，用于标识当前应用实例
-     * 在调用 esp_ble_gatts_* 系列 API 时需要传入
      */
     esp_gatt_if_t   gatts_if;
     
     /**
      * @brief 服务的句柄（Service Handle）
-     * 
-     * 本设备创建的 BLE 服务的句柄
-     * 在调用 esp_ble_gatts_create_service() 成功后获得
-     * 用于后续添加特征值、启动服务等操作
      */
     uint16_t        service_handle;
     
     /**
      * @brief 图像帧特征值（Frame Characteristic）的句柄
-     * 
-     * 用于传输图像数据（如 JPEG/RAW 帧）的特征值
-     * 客户端通过读取或订阅此特征值来接收图像数据
-     * 通常配置为 notify 或 indicate 属性，支持数据推送
      */
     uint16_t        frame_val_handle;
     
     /**
      * @brief 图像帧特征值的 CCCD（Client Characteristic Configuration Descriptor）句柄
-     * 
-     * 客户端配置描述符的句柄，用于控制特征值的 notify/indicate 使能
-     * 当客户端写入 0x0001 时启用 notify，写入 0x0002 启用 indicate
-     * 此句柄用于在连接断开后重置 notify_enabled 状态
      */
     uint16_t        frame_cccd_handle;
     
     /**
      * @brief 控制特征值（Control Characteristic）的句柄
-     * 
-     * 用于接收客户端发送的控制命令（如开始/停止传输、设置参数等）
-     * 客户端通过 write 操作向此特征值发送指令
-     * 服务端在回调中解析并执行对应的命令
      */
     uint16_t        ctrl_val_handle;
     
     /**
      * @brief 最后一次执行的命令编号
-     * 
-     * 存储客户端通过控制特征值发送的最后一个命令值
-     * 用于命令去重、状态跟踪或调试日志
-     * 通常定义为一组枚举值（如 CMD_START=1, CMD_STOP=2）
      */
     int             last_command;
     
     /**
      * @brief 发送互斥锁的信号量句柄
-     * 
-     * 用于保护 send_buf 缓冲区的多线程/多任务访问
-     * 在 FreeRTOS 中，当多个任务（如主循环和回调函数）同时访问 send_buf 时
-     * 需先获取此信号量（xSemaphoreTake），操作完成后释放（xSemaphoreGive）
-     * 防止数据竞争和内存访问冲突
      */
     SemaphoreHandle_t send_lock;
     
     /**
      * @brief 发送数据缓冲区
-     * 
-     * 用于暂存待发送到客户端的数据（如图像帧片段）
-     * 大小为 BLE_SEND_BUF_SIZE（通常根据 MTU 大小定义）
-     * 发送数据时先将数据拷贝到此缓冲区，然后通过 GATT API 发送
-     * 使用前需获取 send_lock 信号量保护
      */
     uint8_t         send_buf[BLE_SEND_BUF_SIZE];
     

@@ -14,9 +14,9 @@ void lcd_init(void);
 // 黑底白字；字号 / 位置 / 字符间距见 lcd.c 内宏定义。
 void lcd_show_dist(float dist);
 
-// 显示三台电机(A/B/D)的累计脉冲数，各两位整数，自上而下分布在 Dist 下方
-//void lcd_show_speed();
+void lcd_show_error(float err);
 
+void lcd_show_tri_error(float err, int mode);
 #ifdef __cplusplus
 }
 #endif
